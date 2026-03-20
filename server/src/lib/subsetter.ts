@@ -110,7 +110,9 @@ export async function subsetFont(
 
     const bTag = weight > 400 ? "B" : "";
     const iTag = italic ? "I" : "";
-    const header = `fontname:${fontName}_${bTag}${iTag}0.ttf\n`;
+    // opentype.js always outputs CFF/OTF format (OTTO magic bytes) — use .otf extension
+    // so tools like mkvtoolnix correctly identify the attachment format.
+    const header = `fontname:${fontName}_${bTag}${iTag}0.otf\n`;
 
     // Filter characters commonly absent from fonts and not worth warning about
     const SUPPRESS_RANGES: Array<[number, number]> = [
