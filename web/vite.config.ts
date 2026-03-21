@@ -15,9 +15,10 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          "vendor-vue": ["vue", "vue-router", "vue-i18n"],
+          "vendor-vue":   ["vue", "vue-router", "vue-i18n"],
           "vendor-icons": ["lucide-vue-next"],
-          "vendor-zip": ["jszip", "file-saver"],
+          "vendor-zip":   ["jszip", "file-saver"],
+          "vendor-utils": ["@vueuse/core", "lodash-es"],
         },
       },
     },

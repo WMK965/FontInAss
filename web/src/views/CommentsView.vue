@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onMounted, onActivated, onDeactivated, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { init } from "@waline/client";
 import "@waline/client/waline.css";
@@ -27,6 +27,14 @@ onMounted(() => {
   });
 });
 
+// With <keep-alive>, the component is cached between route visits.
+// Refresh the comment count when the user returns to this tab so it stays current.
+onActivated(() => {
+  walineController?.update?.({});
+});
+
+// keep-alive uses onDeactivated (not onUnmounted) when navigating away.
+// Clean up only when the component is truly unmounted (app closed).
 onUnmounted(() => {
   walineController?.destroy?.();
   walineController = null;

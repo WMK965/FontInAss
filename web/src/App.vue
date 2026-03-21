@@ -13,6 +13,17 @@ const router = useRouter();
 const route = useRoute();
 
 const currentPath = computed(() => route.path);
+
+// Prefetch a route's JS chunk when the user hovers its nav button.
+// Calls the lazy-import function early so the browser fetches the chunk
+// in the background — by the time they click, it's already in cache.
+const prefetchRoute = (path: string) => {
+  const resolved = router.resolve(path);
+  resolved.matched.forEach(m => {
+    const comp = m.components?.default;
+    if (typeof comp === "function") (comp as () => Promise<unknown>)();
+  });
+};
 const navItems = [
   { path: "/",         labelKey: "home"     },
   { path: "/subset",   labelKey: "subset"   },
@@ -137,6 +148,7 @@ watchEffect(() => {
             :class="isNavActive(item.path)
               ? 'bg-sakura-400 text-white shadow-[var(--shadow-sm)]'
               : 'text-ink-600 hover:bg-sakura-50 hover:text-sakura-600'"
+            @mouseenter="prefetchRoute(item.path)"
             @click="router.push(item.path)"
           >
             {{ t(item.labelKey) }}
@@ -279,6 +291,7 @@ watchEffect(() => {
             :class="isNavActive(item.path)
               ? 'bg-sakura-400 text-white shadow-[var(--shadow-sm)]'
               : 'text-ink-600 hover:bg-sakura-50 hover:text-sakura-600'"
+            @mouseenter="prefetchRoute(item.path)"
             @click="router.push(item.path); mobileMenuOpen = false"
           >
             {{ t(item.labelKey) }}
@@ -331,7 +344,9 @@ watchEffect(() => {
     <main class="flex-1 max-w-6xl mx-auto w-full px-5 py-7">
       <router-view v-slot="{ Component, route: r }">
         <transition name="page" mode="out-in">
-          <component :is="Component" :key="r.path" />
+          <keep-alive :max="5">
+            <component :is="Component" :key="r.path" />
+          </keep-alive>
         </transition>
       </router-view>
     </main>
