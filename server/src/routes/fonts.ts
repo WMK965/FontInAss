@@ -74,7 +74,8 @@ fonts.get("/stats", (c) => {
       "Cache-Control": "public, max-age=60",
     });
   } catch (e) {
-    return c.json({ total: 0, folders: [], error: String(e) }, 500);
+    log("error", "[fonts/stats] error:", e);
+    return c.json({ total: 0, folders: [], error: "Internal server error" }, 500);
   }
 });
 
@@ -100,7 +101,8 @@ fonts.get("/browse", (c) => {
       "Cache-Control": "public, max-age=30",
     });
   } catch (e) {
-    return c.json({ error: String(e) }, 500);
+    log("error", "[fonts/browse] error:", e);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -120,11 +122,10 @@ fonts.get("/list-keys", (c) => {
       "Cache-Control": "no-cache, no-store",
     });
   } catch (e) {
-    return c.json({ error: String(e) }, 500);
+    log("error", "[fonts/list-keys] error:", e);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
-
-// ─── Index a folder (or explicit key list) ────────────────────────────────────
 
 fonts.post("/index-folder", async (c) => {
   let body: { prefix?: string; r2Keys?: string[]; batchSize?: number };
@@ -226,7 +227,8 @@ fonts.post("/scan-local", async (c) => {
       errors: errors.slice(0, 100),
     });
   } catch (e) {
-    return c.json({ error: String(e) }, 500);
+    log("error", "[fonts/scan-local] error:", e);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -377,7 +379,8 @@ fonts.get("/", (c) => {
       "Cache-Control": "no-cache, no-store",
     });
   } catch (e) {
-    return c.json({ error: String(e) }, 500);
+    log("error", "[fonts/list] error:", e);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 
@@ -436,7 +439,8 @@ fonts.post("/", async (c) => {
 
       results.push(await indexFont(filename, bytes, r2KeyOverride));
     } catch (e) {
-      results.push({ filename, id: "", faces: 0, error: e instanceof Error ? e.message : String(e) });
+      log("error", `[fonts/upload] error processing ${filename}:`, e);
+      results.push({ filename, id: "", faces: 0, error: "Failed to process font" });
     }
   }
 

@@ -39,6 +39,6 @@ ENV PORT=3000 \
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-  CMD curl -f http://localhost:3000/api/health || exit 1
+  CMD curl -f -H "X-API-Key: ${API_KEY}" http://localhost:3000/api/health || exit 1
 
 CMD ["bun", "src/index.ts"]

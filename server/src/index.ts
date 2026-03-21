@@ -44,16 +44,25 @@ app.use("*", async (c, next) => {
 app.route("/api/fonts", fontsRoute);
 app.route("/api/subset", subsetRoute);
 
-// Health check
+// Health check — requires API key when configured
 app.get("/api/health", (c) => {
+  if (config.apiKey) {
+    const provided =
+      c.req.header("x-api-key") ??
+      c.req.header("authorization")?.replace(/^Bearer\s+/i, "");
+    if (provided !== config.apiKey) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+  }
   try {
     const db = getDb();
-    const result = db.prepare<{ ok: number }, []>("SELECT 1 as ok").get();
-    return c.json({ status: "ok", db: result?.ok === 1, version: "1.0.0" }, 200, {
-      "Cache-Control": "public, max-age=30",
+    db.prepare<{ ok: number }, []>("SELECT 1 as ok").get();
+    return c.json({ status: "ok" }, 200, {
+      "Cache-Control": "no-store",
     });
   } catch (e) {
-    return c.json({ status: "error", error: String(e) }, 500);
+    log("error", "[health] check failed:", e);
+    return c.json({ status: "error" }, 500);
   }
 });
 
@@ -99,7 +108,7 @@ app.get("*", (c) => {
     return c.json({ error: "Not found" }, 404);
   }
   return serveStatic({ path: "../web/dist/index.html" })(c, async () => {
-    return c.text("Frontend not built. Run: bun run --cwd ../web build", 404);
+    return c.text("Not found", 404);
   });
 });
 

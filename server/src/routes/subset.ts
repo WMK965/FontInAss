@@ -54,7 +54,8 @@ subset.post("/", async (c) => {
       fileEntries.push({ name: filename, bytes: rawBytes });
     }
   } catch (e) {
-    return sendResult(c, CODE.SERVER_ERROR, [`Failed to read request: ${e instanceof Error ? e.message : String(e)}`], null);
+    log("error", "[subset] failed to read request:", e);
+    return sendResult(c, CODE.SERVER_ERROR, ["Failed to read request"], null);
   }
 
   if (fileEntries.length === 0) {
@@ -74,7 +75,7 @@ subset.post("/", async (c) => {
       return sendResult(c, result.code, result.messages, result.data);
     } catch (e) {
       log("error", `[subset] ${name} unhandled error:`, e);
-      return sendResult(c, CODE.SERVER_ERROR, [`Server error: ${e instanceof Error ? e.message : String(e)}`], null);
+      return sendResult(c, CODE.SERVER_ERROR, ["Internal server error"], null);
     }
   }
 
@@ -102,7 +103,7 @@ subset.post("/", async (c) => {
         anyError = true;
         const err = (results[j] as PromiseRejectedResult).reason;
         log("error", `[subset] batch[${i+j}] ${name} rejected:`, err);
-        parts.push({ filename: name, code: CODE.SERVER_ERROR, messages: [String(err)], data: null });
+        parts.push({ filename: name, code: CODE.SERVER_ERROR, messages: ["Internal server error"], data: null });
       }
     }
   }
@@ -206,9 +207,9 @@ async function processSubtitle(
     try {
       strictMatchMap = lookupFontsBatch(lookupReqs);
     } catch (e) {
-      return { code: CODE.SERVER_ERROR, messages: [`Database error: ${e instanceof Error ? e.message : String(e)}`], data: null };
+      log("error", "[subset] fontsCheck DB error:", e);
+      return { code: CODE.SERVER_ERROR, messages: ["Database error"], data: null };
     }
-    const missing = lookupReqs.filter(r => !strictMatchMap.get(r.key)).map(r => r.nameLower);
     if (missing.length > 0) {
       log("warn", `[subset:${filename}] fonts-check failed, missing: ${missing.map(n => displayName(n)).join(", ")}`);
       return { code: CODE.MISSING_FONT, messages: missing.map(n => `Missing font: [${displayName(n)}]`), data: null };
@@ -219,10 +220,9 @@ async function processSubtitle(
   try {
     matchMap = lookupFontsBatch(lookupReqs);
   } catch (e) {
-    return { code: CODE.SERVER_ERROR, messages: [`Database error: ${e instanceof Error ? e.message : String(e)}`], data: null };
+    log("error", "[subset] lookup DB error:", e);
+    return { code: CODE.SERVER_ERROR, messages: ["Database error"], data: null };
   }
-
-  // Log lookup results
   for (const req of lookupReqs) {
     const m = matchMap.get(req.key);
     if (m) {
@@ -272,7 +272,7 @@ async function processSubtitle(
     if (!fontBytes) {
       log("warn", `[subset:${filename}] font file missing on disk: ${r2Key}`);
       for (const { key, nameLower } of variants) {
-        subsetResultMap.set(key, { encoded: "", missingGlyphs: "", error: `Failed to load font from storage: [${displayName(nameLower)}] — file not found at: ${r2Key}` });
+        subsetResultMap.set(key, { encoded: "", missingGlyphs: "", error: `Failed to load font: [${displayName(nameLower)}]` });
       }
       continue;
     }
