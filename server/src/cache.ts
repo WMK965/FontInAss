@@ -75,9 +75,10 @@ export function setInCache(key: string, data: Uint8Array): void {
   }
   store.set(key, { data, expires: Date.now() + CACHE_TTL_MS });
   totalBytes += data.length;
-  // Evict synchronously to ensure we never exceed the memory cap
+  // Schedule eviction asynchronously — runs before the next macrotask, so memory
+  // stays bounded without blocking the current call stack on large cache churn.
   if (store.size > config.cacheMaxEntries || totalBytes > CACHE_MAX_BYTES) {
-    evict();
+    queueMicrotask(() => evict());
   }
 }
 

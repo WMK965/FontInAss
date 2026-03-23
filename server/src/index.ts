@@ -7,6 +7,7 @@
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { compress } from "hono/compress";
 import { serveStatic } from "hono/bun";
 import { config, log } from "./config.js";
 import { ensureFontDir } from "./storage.js";
@@ -39,6 +40,9 @@ app.use("*", async (c, next) => {
     exposeHeaders: ["X-Code", "X-Message"],
   })(c, next);
 });
+
+// Gzip / Brotli response compression (API JSON, HTML, JS, CSS, ASS files)
+app.use("*", compress());
 
 // Routes
 app.route("/api/fonts", fontsRoute);

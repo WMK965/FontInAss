@@ -56,6 +56,7 @@ const emit = defineEmits<{ click: [e: MouseEvent] }>();
   <button
     :class="cn(buttonVariants({ variant, size }), props.class)"
     :disabled="disabled || loading"
+    :aria-busy="loading || undefined"
     @click="emit('click', $event)"
   >
     <svg

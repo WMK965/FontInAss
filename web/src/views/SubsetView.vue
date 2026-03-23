@@ -2,8 +2,6 @@
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { useI18n } from "vue-i18n";
 import { toast } from "vue-sonner";
-import JSZip from "jszip";
-import { saveAs } from "file-saver";
 import copy from "copy-to-clipboard";
 import {
   Cherry, Download, Trash2, RotateCcw,
@@ -61,9 +59,8 @@ const dragActive = ref(false);
 let dragCounter = 0;
 
 // ─── Concurrency pool ─────────────────────────────────────────────────────────
-// Workers have a 128 MB memory limit. CJK fonts are large; cap concurrent
-// subsetting requests so Worker isolates don't race to exhaustion.
-const MAX_CONCURRENT = 3;
+// Local deployment — no Worker memory cap, bump concurrency for faster batch processing
+const MAX_CONCURRENT = 6;
 
 async function runWithConcurrency<T>(
   tasks: Array<() => Promise<T>>,
@@ -84,6 +81,10 @@ async function runWithConcurrency<T>(
 }
 
 // ─── Processing ───────────────────────────────────────────────────────────────
+
+// Abort controller for the current processing batch — cancelled when the component unmounts
+let processingAbort: AbortController | null = null;
+
 const processFile = async (entry: FileEntry) => {
   entry.status = t("statusUploading");
   entry.messages = [];
@@ -95,6 +96,7 @@ const processFile = async (entry: FileEntry) => {
       clearFonts: settings.CLEAR_FONTS,
       srtFormat: settings.SRT_FORMAT,
       srtStyle: settings.SRT_STYLE,
+      signal: processingAbort?.signal,
     });
     entry.code = res.code;
     entry.messages = res.messages ?? [];
@@ -102,6 +104,7 @@ const processFile = async (entry: FileEntry) => {
     const codeKey = String(res.code);
     entry.status = t(codeKey) !== codeKey ? t(codeKey) : t("statusError");
   } catch (e) {
+    if ((e as Error)?.name === "AbortError") return; // component unmounted mid-flight
     entry.status = t("statusError");
     entry.messages = [String(e instanceof Error ? e.message : e)];
   }
@@ -117,6 +120,7 @@ const addFiles = async (fileList: FileList | File[]) => {
     messages: [], resultBytes: null, code: null,
   }));
   files.value.push(...entries);
+  processingAbort = new AbortController();
   await runWithConcurrency(entries.map(e => () => processFile(e)));
 };
 
@@ -148,11 +152,13 @@ const hasFailed = computed(() => files.value.some(f => f.code === null || f.code
 
 const downloadAll = async () => {
   const ready = files.value.filter(f => f.resultBytes);
-  if (ready.length === 0) return; // button is only shown when canDownload is true
+  if (ready.length === 0) return;
   if (ready.length === 1 && !settings.EXTRACT_FONTS) {
     const f = ready[0];
+    const { saveAs } = await import("file-saver");
     saveAs(new Blob([f.resultBytes!.buffer as ArrayBuffer]), f.name.replace(/\.(ass|ssa|srt)$/i, ".subset.ass"));
   } else {
+    const [{ default: JSZip }, { saveAs }] = await Promise.all([import("jszip"), import("file-saver")]);
     const zip = new JSZip();
     for (const f of ready) zip.file(f.name.replace(/\.(ass|ssa|srt)$/i, ".subset.ass"), f.resultBytes!);
     const blob = await zip.generateAsync({ type: "blob" });
@@ -161,8 +167,9 @@ const downloadAll = async () => {
   if (settings.CLEAR_AFTER_DOWNLOAD) files.value = files.value.filter(f => !f.resultBytes);
 };
 
-const downloadEntry = (entry: FileEntry) => {
+const downloadEntry = async (entry: FileEntry) => {
   if (!entry.resultBytes) return;
+  const { saveAs } = await import("file-saver");
   saveAs(new Blob([entry.resultBytes.buffer as ArrayBuffer]), entry.name.replace(/\.(ass|ssa|srt)$/i, ".subset.ass"));
 };
 
@@ -190,6 +197,7 @@ onMounted(() => {
   window.addEventListener("drop",      onDrop      as EventListener);
 });
 onBeforeUnmount(() => {
+  processingAbort?.abort();
   window.removeEventListener("dragenter", onDragEnter as EventListener);
   window.removeEventListener("dragover",  onDragOver  as EventListener);
   window.removeEventListener("dragleave", onDragLeave as EventListener);

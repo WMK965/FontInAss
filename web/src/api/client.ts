@@ -97,6 +97,7 @@ export interface SubsetOptions {
   clearFonts?: boolean;
   srtFormat?: string;
   srtStyle?: string;
+  signal?: AbortSignal;
 }
 
 export interface SubsetFileResult {
@@ -279,6 +280,7 @@ export async function subsetFile(file: File, opts: SubsetOptions = {}): Promise<
     method: "POST",
     headers,
     body: await file.arrayBuffer(),
+    signal: opts.signal,
   });
 
   const code = parseInt(res.headers.get("x-code") ?? "500", 10);

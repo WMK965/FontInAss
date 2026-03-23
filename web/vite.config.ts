@@ -17,7 +17,7 @@ export default defineConfig({
         manualChunks: {
           "vendor-vue":   ["vue", "vue-router", "vue-i18n"],
           "vendor-icons": ["lucide-vue-next"],
-          "vendor-zip":   ["jszip", "file-saver"],
+          // jszip + file-saver are dynamically imported on demand — no manual chunk needed
           "vendor-utils": ["@vueuse/core", "lodash-es"],
         },
       },

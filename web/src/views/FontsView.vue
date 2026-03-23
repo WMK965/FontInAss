@@ -317,6 +317,8 @@ const uploadDragActive = ref(false);
 let   uploadDragCounter = 0;
 const uploadRunning   = ref(false);
 const uploadSummary   = ref<{ ok: number; fail: number } | null>(null);
+const uploadBatchDone = ref(0);
+const uploadBatchTotal = ref(0);
 const dropErrorMsg    = ref("");
 let   dropErrorTimer  = 0;
 
@@ -345,6 +347,8 @@ const startUpload = async () => {
   const pending = uploadQueue.value.filter(e => e.status === "pending");
   if (!pending.length) return;
   uploadRunning.value = true;
+  uploadBatchTotal.value = pending.length;
+  uploadBatchDone.value = 0;
 
   const dir = uploadDir.value.trim().replace(/\/?$/, "/");
   let ok = 0;
@@ -359,6 +363,7 @@ const startUpload = async () => {
       entry.status = "error";
       entry.msg = String(e instanceof Error ? e.message : e);
     }
+    uploadBatchDone.value++;
   }
   uploadRunning.value = false;
   uploadSummary.value = { ok, fail: pending.length - ok };
@@ -644,7 +649,7 @@ onBeforeUnmount(() => {
       <!-- Queue -->
       <div v-if="uploadQueue.length > 0" class="flex flex-col gap-2">
         <div class="flex items-center gap-2 min-h-[32px]">
-          <!-- Summary (after upload completes) -->
+          <!-- Summary / live progress / idle count -->
           <Transition name="chip-text" mode="out-in">
             <span v-if="uploadSummary" key="summary" class="flex items-center gap-1.5 text-sm font-medium"
               :class="uploadSummary.fail > 0 ? 'text-amber-600' : 'text-mint-600'">
@@ -653,6 +658,10 @@ onBeforeUnmount(() => {
               <template v-if="uploadSummary.fail > 0">
                 · <span class="text-rose-500">{{ uploadSummary.fail }} {{ locale.startsWith('zh') ? '失败' : 'failed' }}</span>
               </template>
+            </span>
+            <span v-else-if="uploadRunning" key="progress" class="flex items-center gap-1.5 text-sm font-medium text-sakura-500">
+              <Loader2 class="w-3.5 h-3.5 shrink-0 animate-spin-slow" />
+              {{ uploadBatchDone }}/{{ uploadBatchTotal }}
             </span>
             <span v-else key="count" class="text-sm text-ink-500">{{ uploadQueue.length }} {{ t('files', uploadQueue.length) }}</span>
           </Transition>

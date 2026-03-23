@@ -17,9 +17,12 @@
     <!-- Pre-warm unpkg CDN for Waline emoji assets -->
     <link rel="preconnect" href="https://unpkg.com" crossorigin />
     <link rel="dns-prefetch" href="https://unpkg.com" />
+    <!-- Pre-warm Cravatar (Chinese Gravatar mirror) for user avatars -->
+    <link rel="preconnect" href="https://cravatar.cn" crossorigin />
+    <link rel="dns-prefetch" href="https://cravatar.cn" />
     <!-- Pre-resolve analytics domain -->
     <link rel="dns-prefetch" href="https://analytics.catcat.blog" />
-    <script src="https://analytics.catcat.blog/api/script.js" data-site-id="928e330dfbef" defer></script>
+    <script src="https://analytics.catcat.blog/api/script.js" data-site-id="928e330dfbef" async defer></script>
   </head>
   <body>
     <div id="app"></div>
