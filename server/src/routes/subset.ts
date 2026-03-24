@@ -281,7 +281,8 @@ async function processSubtitle(
     for (const { key, unicodeSet, nameLower, weight, italic } of variants) {
       const match = matchMap.get(key)!;
       const tSub = Date.now();
-      const result = await subsetFont(fontBytes, match.fontIndex, nameLower, weight, italic, unicodeSet);
+      const fontDisplayName = originalNames[nameLower] ?? nameLower;
+      const result = await subsetFont(fontBytes, match.fontIndex, fontDisplayName, weight, italic, unicodeSet);
       log("debug", `[subset:${filename}]   subsetted "${displayName(nameLower)}" in ${Date.now()-tSub}ms → ${result.encoded.length} encoded chars${result.error ? ` ERROR: ${result.error}` : ""}${result.missingGlyphs ? ` MISSING: ${result.missingGlyphs}` : ""}`);
       subsetResultMap.set(key, result);
     }

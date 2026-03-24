@@ -69,7 +69,16 @@ export function uuencode(data: Uint8Array): string {
   let finalLen = outIdx;
   if (finalLen > 0 && out[finalLen - 1] === 10) finalLen--;
 
-  return new TextDecoder("ascii").decode(out.slice(0, finalLen));
+  let result = new TextDecoder("ascii").decode(out.slice(0, finalLen));
+
+  // ASS parsers (libass, VSFilter) treat any line starting with '[' as a section
+  // header, which truncates font data mid-stream. Merge such lines with the
+  // previous line to avoid this — decoders handle variable-length lines fine.
+  if (result.includes("\n[")) {
+    result = result.replace(/\n\[/g, "[");
+  }
+
+  return result;
 }
 
 /**
