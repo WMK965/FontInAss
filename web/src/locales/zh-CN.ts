@@ -104,6 +104,8 @@ export default {
   fontManagement: "字体管理",
   fontManagementDesc: "浏览 R2 字体库，索引字体，管理已索引字体",
   browseFailed: "浏览 R2 失败",
+  errAuthTitle: "API Key 无效",
+  errAuthDesc: "服务器拒绝了请求，请确认 .env 中的 API_KEY 与输入的密钥一致。",
   indexAll: "全部索引",
   index: "索引",
   indexStats: "索引状态",

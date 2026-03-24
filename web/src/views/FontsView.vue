@@ -55,6 +55,8 @@ interface R2Node {
 
 const r2Tree = ref<R2Node[]>([]);
 const browserLoading = ref(false);
+const browserError = ref<string | null>(null);
+const isAuthError = computed(() => /unauthorized|401|403|forbidden/i.test(browserError.value ?? ""));
 
 // Per-prefix indexing progress — module singleton (survives navigation)
 const { indexProgress, ensureProgress } = useIndexState();
@@ -82,11 +84,12 @@ const browsePrefix = async (prefix: string): Promise<{ folders: R2Node[]; files:
 
 const loadRoot = async () => {
   browserLoading.value = true;
+  browserError.value = null;
   try {
     const { folders, files } = await browsePrefix("");
     r2Tree.value = [...folders, ...files];
   } catch (e) {
-    toast.error(t("browseFailed"));
+    browserError.value = String(e instanceof Error ? e.message : e);
   } finally {
     browserLoading.value = false;
   }
@@ -456,18 +459,74 @@ onBeforeUnmount(() => {
 
 <template>
   <div>
-  <!-- Lock screen -->
-  <div v-if="!hasKey" class="card p-10 flex flex-col items-center text-center gap-5 max-w-md mx-auto mt-12">
-    <div class="w-16 h-16 rounded-2xl bg-amber-100 flex items-center justify-center">
-      <KeyRound class="w-8 h-8 text-amber-500" />
+  <!-- Lock screen — full-height centered with ambient sakura background -->
+  <div v-if="!hasKey" class="relative flex min-h-[74vh] items-center justify-center overflow-hidden py-12">
+
+    <!-- Ambient background blobs -->
+    <div class="pointer-events-none absolute inset-0" aria-hidden="true">
+      <div class="absolute -top-20 right-0 h-80 w-80 rounded-full bg-sakura-200/50 blur-3xl" />
+      <div class="absolute -bottom-20 -left-10 h-72 w-72 rounded-full bg-sky-100/60 blur-3xl" />
+      <div class="absolute left-1/2 top-1/2 h-64 w-96 -translate-x-1/2 -translate-y-1/2 rounded-full bg-sakura-100/70 blur-3xl" />
     </div>
-    <div>
-      <h2 class="font-display font-semibold text-xl text-ink-900 mb-2">{{ t('lockTitle') }}</h2>
-      <p class="text-sm text-ink-400 leading-relaxed">{{ t('lockDesc') }}</p>
-    </div>
-    <div class="w-full flex gap-2">
-      <KInput v-model="lockKeyInput" type="password" :placeholder="t('apiKeyPlaceholder')" class="flex-1" @keyup.enter="unlockWithKey" />
-      <KButton variant="primary" @click="unlockWithKey">{{ t('unlock') }}</KButton>
+
+    <div class="relative z-10 w-full max-w-sm px-5">
+
+      <!-- Icon -->
+      <div class="mb-8 flex justify-center animate-fade-in">
+        <div class="relative">
+          <div class="absolute inset-0 scale-150 rounded-full bg-sakura-400/20 blur-xl" />
+          <div class="relative flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-sakura-400 to-sakura-600 shadow-[var(--shadow-xl)]">
+            <KeyRound class="h-9 w-9 text-white" :stroke-width="1.5" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Heading -->
+      <div class="mb-6 text-center animate-fade-in" style="animation-delay:60ms">
+        <h1 class="font-display text-[1.85rem] font-bold leading-tight tracking-tight text-ink-900">
+          {{ t('lockTitle') }}
+        </h1>
+        <p class="mt-2 text-sm leading-relaxed text-ink-400">
+          {{ t('lockDesc') }}
+        </p>
+      </div>
+
+      <!-- Auth card -->
+      <div class="card-raised flex flex-col gap-3.5 p-6 animate-fade-in" style="animation-delay:120ms">
+
+        <!-- API key input -->
+        <div class="flex flex-col gap-1.5">
+          <span class="text-[10px] font-bold uppercase tracking-[0.12em] text-ink-400 select-none">API Key</span>
+          <div class="relative">
+            <input
+              v-model="lockKeyInput"
+              type="password"
+              :placeholder="t('apiKeyPlaceholder')"
+              class="w-full h-11 rounded-xl border border-ink-200 bg-white px-4 pr-10 font-mono text-sm text-ink-900 placeholder:text-ink-300 focus:border-sakura-400 focus:ring-2 focus:ring-sakura-400/20 outline-none transition-all duration-150"
+              @keyup.enter="unlockWithKey"
+            />
+            <KeyRound class="pointer-events-none absolute right-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-300" />
+          </div>
+        </div>
+
+        <!-- Submit -->
+        <KButton variant="primary" size="lg" class="w-full" @click="unlockWithKey">
+          {{ t('unlock') }}
+        </KButton>
+
+        <!-- Hint -->
+        <p class="text-center text-[11px] leading-relaxed text-ink-300">
+          <template v-if="locale.startsWith('zh')">
+            在 <code class="rounded bg-ink-100 px-1 py-0.5 font-mono text-[10px] text-ink-500">.env</code> 文件中配置
+            <code class="rounded bg-ink-100 px-1 py-0.5 font-mono text-[10px] text-ink-500">API_KEY</code>
+          </template>
+          <template v-else>
+            Set <code class="rounded bg-ink-100 px-1 py-0.5 font-mono text-[10px] text-ink-500">API_KEY</code>
+            in your <code class="rounded bg-ink-100 px-1 py-0.5 font-mono text-[10px] text-ink-500">.env</code> file
+          </template>
+        </p>
+      </div>
+
     </div>
   </div>
 
@@ -591,9 +650,47 @@ onBeforeUnmount(() => {
         </KButton>
       </div>
 
-      <div v-if="browserLoading" class="flex justify-center py-8">
+      <div v-if="browserLoading" class="flex justify-center py-12">
         <KSpinner />
       </div>
+
+      <!-- Error state: auth failure or generic network error -->
+      <div
+        v-else-if="browserError"
+        class="rounded-2xl border animate-fade-in overflow-hidden"
+        :class="isAuthError ? 'border-amber-200 bg-amber-50/50' : 'border-rose-200 bg-rose-50/50'"
+      >
+        <div class="flex flex-col items-center gap-4 px-8 py-10 text-center">
+          <!-- Icon -->
+          <div
+            class="flex h-14 w-14 items-center justify-center rounded-2xl"
+            :class="isAuthError ? 'bg-amber-100' : 'bg-rose-100'"
+          >
+            <component
+              :is="isAuthError ? KeyRound : AlertTriangle"
+              class="h-7 w-7"
+              :class="isAuthError ? 'text-amber-500' : 'text-rose-400'"
+            />
+          </div>
+
+          <!-- Message -->
+          <div>
+            <p class="font-display font-semibold text-ink-900 text-base mb-1.5">
+              {{ isAuthError ? t('errAuthTitle') : t('browseFailed') }}
+            </p>
+            <p class="mx-auto max-w-sm text-sm leading-relaxed text-ink-400">
+              {{ isAuthError ? t('errAuthDesc') : browserError }}
+            </p>
+          </div>
+
+          <!-- Actions -->
+          <KButton variant="ghost" size="sm" @click="loadRoot">
+            <RefreshCcw class="w-3.5 h-3.5" />
+            {{ t('refresh') }}
+          </KButton>
+        </div>
+      </div>
+
       <KEmpty v-else-if="r2Tree.length === 0" :title="t('r2Empty')" />
       <div v-else class="flex flex-col gap-1 font-mono text-sm">
         <R2NodeRow

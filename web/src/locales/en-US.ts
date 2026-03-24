@@ -104,6 +104,8 @@ export default {
   fontManagement: "Font Management",
   fontManagementDesc: "Browse R2 font library, index fonts, manage indexed fonts",
   browseFailed: "Failed to browse R2",
+  errAuthTitle: "Invalid API Key",
+  errAuthDesc: "The server rejected the request. Check that API_KEY in your .env matches what you entered.",
   indexAll: "Index All",
   index: "Index",
   indexStats: "Index Stats",
