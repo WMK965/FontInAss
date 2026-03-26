@@ -249,4 +249,12 @@ export default {
   sharingPendingReview: "Pending Contributions",
   sharingNoPending: "No pending contributions",
   sharingAdminUploadTitle: "Upload & Publish Archive",
+  sharingContributeFormDesc: "Fill in subtitle info and upload a zip file. It will be publicly available after admin review.",
+  sharingAnimeInfo: "Anime Info",
+  sharingAnimeNamePlaceholder: "e.g. Bocchi the Rock",
+  sharingSubGroupPlaceholder: "e.g. LoliHouse",
+  sharingFileUpload: "File Upload",
+  sharingChangeFile: "Change file",
+  sharingUploadSuccess: "Submitted!",
+  sharingUploadSuccessDesc: "The admin will review your contribution soon. It will appear on the sharing page once approved.",
 }

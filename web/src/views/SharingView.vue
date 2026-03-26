@@ -5,6 +5,7 @@ import { debounce } from "lodash-es";
 import {
   Share2, Search, X, Tv, Download, Upload, Heart,
   Paperclip, FileArchive, FolderOpen, ChevronRight, Home,
+  ArrowLeft, CheckCircle2, AlertCircle, CloudUpload,
 } from "lucide-vue-next";
 import KButton from "../components/KButton.vue";
 import KBadge from "../components/KBadge.vue";
@@ -178,9 +179,9 @@ function clearSearch() {
   searchResultIds.value = new Set();
 }
 
-// ─── Contribute Modal ─────────────────────────────────────────────────────────
+// ─── Contribute View (inline full-page) ───────────────────────────────────────
 
-const showContributeModal = ref(false);
+const showContributeView = ref(false);
 const uploadForm = ref({
   name_cn: "",
   letter: "",
@@ -194,8 +195,18 @@ const uploadFile = ref<File | null>(null);
 const uploadSubmitting = ref(false);
 const uploadDetected = ref("");
 const dropHover = ref(false);
+const uploadSuccess = ref(false);
+const uploadError = ref("");
 
 const LANG_OPTIONS = ["chs", "cht", "jpn", "chs_jpn", "cht_jpn", "sc", "tc", "eng"];
+
+const canSubmit = computed(() =>
+  uploadForm.value.name_cn.trim() &&
+  uploadForm.value.sub_group.trim() &&
+  uploadForm.value.languages.length > 0 &&
+  uploadFile.value !== null &&
+  !uploadSubmitting.value
+);
 
 function toggleLang(lang: string) {
   const idx = uploadForm.value.languages.indexOf(lang);
@@ -209,6 +220,7 @@ function handleFileSelect(e: Event) {
   if (file) {
     uploadFile.value = file;
     uploadDetected.value = `${formatSize(file.size)}`;
+    uploadError.value = "";
   }
 }
 
@@ -219,6 +231,7 @@ function handleDrop(e: DragEvent) {
   if (file && file.name.endsWith(".zip")) {
     uploadFile.value = file;
     uploadDetected.value = `${formatSize(file.size)}`;
+    uploadError.value = "";
   }
 }
 
@@ -226,13 +239,27 @@ function resetForm() {
   uploadForm.value = { name_cn: "", letter: "", season: "S1", sub_group: "", languages: [], has_fonts: false, contributor: "" };
   uploadFile.value = null;
   uploadDetected.value = "";
+  uploadSuccess.value = false;
+  uploadError.value = "";
+}
+
+function openContributeView() {
+  resetForm();
+  showContributeView.value = true;
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function closeContributeView() {
+  showContributeView.value = false;
+  resetForm();
 }
 
 async function submitContribute() {
   if (!uploadFile.value || uploadSubmitting.value) return;
+  uploadError.value = "";
   const meta = {
     name_cn: uploadForm.value.name_cn,
-    letter: uploadForm.value.letter.toUpperCase(),
+    letter: uploadForm.value.letter.toUpperCase() || uploadForm.value.name_cn.charAt(0).toUpperCase(),
     season: uploadForm.value.season,
     sub_group: uploadForm.value.sub_group,
     languages: uploadForm.value.languages,
@@ -242,12 +269,14 @@ async function submitContribute() {
   uploadSubmitting.value = true;
   try {
     await contributeArchive(uploadFile.value, meta);
-    showContributeModal.value = false;
-    resetForm();
-    await loadArchives();
-  } catch (e) {
+    uploadSuccess.value = true;
+    setTimeout(() => {
+      closeContributeView();
+      loadArchives();
+    }, 2000);
+  } catch (e: any) {
     console.error("Upload error:", e);
-    alert(String(e));
+    uploadError.value = e.message || String(e);
   } finally {
     uploadSubmitting.value = false;
   }
@@ -315,8 +344,8 @@ onMounted(() => {
 <template>
   <div class="flex flex-col gap-6 animate-fade-in">
 
-    <!-- ═══ Header: Stats + Search ═══ -->
-    <section class="card p-6 bg-gradient-to-br from-white to-sakura-50/40">
+    <!-- ═══ Header: Stats + Search (hidden during contribute) ═══ -->
+    <section v-if="!showContributeView" class="card p-6 bg-gradient-to-br from-white to-sakura-50/40">
       <div class="flex items-start justify-between gap-4 mb-4 flex-wrap">
         <div class="flex items-center gap-3">
           <div class="w-11 h-11 rounded-xl bg-sakura-100 flex items-center justify-center shrink-0">
@@ -369,20 +398,20 @@ onMounted(() => {
     </section>
 
     <!-- ═══ Loading ═══ -->
-    <div v-if="loading" class="flex justify-center py-16">
+    <div v-if="loading && !showContributeView" class="flex justify-center py-16">
       <KSpinner />
     </div>
 
     <!-- ═══ Empty State ═══ -->
     <KEmpty
-      v-else-if="archives.length === 0"
+      v-else-if="archives.length === 0 && !showContributeView"
       :title="t('sharingNoArchives')"
       :description="t('sharingNoArchivesDesc')"
     />
 
     <!-- ═══ Breadcrumb Navigation ═══ -->
     <nav
-      v-if="!loading && archives.length > 0 && !isSearching && navDepth > 0"
+      v-if="!loading && archives.length > 0 && !isSearching && navDepth > 0 && !showContributeView"
       class="flex items-center gap-1.5 text-sm flex-wrap"
     >
       <button
@@ -407,7 +436,7 @@ onMounted(() => {
 
     <!-- ═══ Level 0: Letter Folder Grid ═══ -->
     <div
-      v-if="!loading && archives.length > 0 && !isSearching && navDepth === 0"
+      v-if="!loading && archives.length > 0 && !isSearching && navDepth === 0 && !showContributeView"
       class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4"
     >
       <button
@@ -426,7 +455,7 @@ onMounted(() => {
 
     <!-- ═══ Level 1: Anime List ═══ -->
     <div
-      v-if="!loading && archives.length > 0 && !isSearching && navDepth === 1"
+      v-if="!loading && archives.length > 0 && !isSearching && navDepth === 1 && !showContributeView"
       class="flex flex-col gap-3"
     >
       <button
@@ -451,7 +480,7 @@ onMounted(() => {
 
     <!-- ═══ Level 2: Season List ═══ -->
     <div
-      v-if="!loading && archives.length > 0 && !isSearching && navDepth === 2"
+      v-if="!loading && archives.length > 0 && !isSearching && navDepth === 2 && !showContributeView"
       class="flex flex-col gap-3"
     >
       <button
@@ -482,7 +511,7 @@ onMounted(() => {
 
     <!-- ═══ Level 3: Archive Files ═══ -->
     <div
-      v-if="!loading && archives.length > 0 && !isSearching && navDepth === 3"
+      v-if="!loading && archives.length > 0 && !isSearching && navDepth === 3 && !showContributeView"
       class="flex flex-col gap-2"
     >
       <div
@@ -527,7 +556,7 @@ onMounted(() => {
     </div>
 
     <!-- ═══ Search Mode: Flat results ═══ -->
-    <div v-if="!loading && isSearching" class="mt-2">
+    <div v-if="!loading && isSearching && !showContributeView" class="mt-2">
       <p class="text-sm text-ink-400 mb-4">
         "<strong class="text-ink-600">{{ searchQuery }}</strong>"
         — {{ filteredArchives.length }}
@@ -563,145 +592,224 @@ onMounted(() => {
       <KEmpty v-if="filteredArchives.length === 0" :title="t('sharingNoResults')" :description="t('sharingNoResultsDesc')" />
     </div>
 
-    <!-- ═══ Contribute Footer ═══ -->
-    <section v-if="!loading && archives.length > 0" class="card p-6 text-center mt-4">
-      <div class="w-11 h-11 rounded-xl bg-mint-100 flex items-center justify-center mx-auto mb-3">
-        <Heart class="w-5 h-5 text-mint-500" />
+    <!-- ═══ Contribute Footer CTA ═══ -->
+    <section v-if="!loading && archives.length > 0 && !showContributeView" class="card overflow-hidden mt-4">
+      <div class="flex flex-col sm:flex-row items-center gap-4 p-5 sm:p-6 bg-gradient-to-r from-mint-50/60 to-sakura-50/40">
+        <div class="w-11 h-11 rounded-xl bg-mint-100 flex items-center justify-center shrink-0">
+          <Heart class="w-5 h-5 text-mint-500" />
+        </div>
+        <div class="flex-1 text-center sm:text-left">
+          <h3 class="font-display font-semibold text-ink-800 text-base">
+            {{ t('sharingContributeTitle') }}
+          </h3>
+          <p class="text-sm text-ink-400 mt-0.5">
+            {{ t('sharingContributeDesc') }}
+          </p>
+        </div>
+        <KButton variant="primary" @click="openContributeView" class="shrink-0">
+          <CloudUpload class="w-4 h-4" />
+          {{ t('sharingContributeButton') }}
+        </KButton>
       </div>
-      <h3 class="font-display font-semibold text-ink-800 text-base mb-1">
-        {{ t('sharingContributeTitle') }}
-      </h3>
-      <p class="text-sm text-ink-400 mb-4 max-w-md mx-auto leading-relaxed">
-        {{ t('sharingContributeDesc') }}
-      </p>
-      <KButton variant="secondary" @click="showContributeModal = true">
-        <Upload class="w-4 h-4" />
-        {{ t('sharingContributeButton') }}
-      </KButton>
     </section>
 
-    <!-- ═══ Contribute Modal (Improved) ═══ -->
-    <Transition name="modal">
-      <div v-if="showContributeModal" class="fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="showContributeModal = false">
-        <div class="absolute inset-0 bg-ink-950/30 backdrop-blur-sm"></div>
-        <div class="card p-0 w-full max-w-lg max-h-[85vh] overflow-y-auto relative z-10 animate-scale-in">
+    <!-- ═══ Contribute View (Inline Full-Page) ═══ -->
+    <Transition name="slide">
+      <div v-if="showContributeView" class="flex flex-col gap-6 animate-fade-in">
 
-          <!-- Modal header -->
-          <div class="px-6 pt-6 pb-4 border-b border-sakura-100/60">
-            <div class="flex items-center gap-3">
-              <div class="w-10 h-10 rounded-xl bg-sakura-100 flex items-center justify-center shrink-0">
-                <Heart class="w-5 h-5 text-sakura-500" />
-              </div>
-              <div>
-                <h2 class="font-display font-bold text-lg text-ink-900">{{ t('sharingContributeFormTitle') }}</h2>
-                <p class="text-xs text-ink-400 mt-0.5">{{ t('sharingContributeDesc') }}</p>
-              </div>
-            </div>
+        <!-- Back button -->
+        <button
+          @click="closeContributeView"
+          class="flex items-center gap-2 text-sm text-sakura-500 hover:text-sakura-600 transition-colors duration-150 font-medium self-start"
+        >
+          <ArrowLeft class="w-4 h-4" />
+          {{ t('sharingBack') }}
+        </button>
+
+        <!-- Success state -->
+        <div v-if="uploadSuccess" class="card p-10 text-center">
+          <div class="w-16 h-16 rounded-full bg-mint-100 flex items-center justify-center mx-auto mb-4">
+            <CheckCircle2 class="w-8 h-8 text-mint-500" />
           </div>
-
-          <div class="px-6 py-5 flex flex-col gap-5">
-            <!-- Step 1: Anime info -->
-            <div class="flex flex-col gap-3">
-              <div class="flex items-center gap-2 mb-1">
-                <div class="w-6 h-6 rounded-full bg-sakura-100 flex items-center justify-center text-xs font-bold text-sakura-500">1</div>
-                <span class="text-sm font-semibold text-ink-700">{{ t('sharingAnimeName') }}</span>
-              </div>
-              <input v-model="uploadForm.name_cn" class="w-full px-3 py-2.5 rounded-xl border border-sakura-200 text-sm focus:outline-none focus:ring-2 focus:ring-sakura-300/50" :placeholder="t('sharingAnimeName')" />
-              <div class="flex gap-3">
-                <div class="w-20">
-                  <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingLetter') }}</label>
-                  <input v-model="uploadForm.letter" maxlength="1" class="w-full px-3 py-2 rounded-xl border border-sakura-200 text-sm uppercase focus:outline-none focus:ring-2 focus:ring-sakura-300/50" />
-                </div>
-                <div class="flex-1">
-                  <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingSeason') }}</label>
-                  <select v-model="uploadForm.season" class="w-full px-3 py-2 rounded-xl border border-sakura-200 text-sm focus:outline-none focus:ring-2 focus:ring-sakura-300/50">
-                    <option v-for="s in ['S1','S2','S3','S4','Movie','SPs','OVA']" :key="s" :value="s">{{ s }}</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            <!-- Step 2: Sub group & languages -->
-            <div class="flex flex-col gap-3">
-              <div class="flex items-center gap-2 mb-1">
-                <div class="w-6 h-6 rounded-full bg-sky-100 flex items-center justify-center text-xs font-bold text-sky-500">2</div>
-                <span class="text-sm font-semibold text-ink-700">{{ t('sharingSubGroup') }} & {{ t('sharingLanguages') }}</span>
-              </div>
-              <input v-model="uploadForm.sub_group" class="w-full px-3 py-2.5 rounded-xl border border-sakura-200 text-sm focus:outline-none focus:ring-2 focus:ring-sakura-300/50" :placeholder="t('sharingSubGroup')" />
-              <div class="flex flex-wrap gap-2">
-                <button
-                  v-for="lang in LANG_OPTIONS"
-                  :key="lang"
-                  @click="toggleLang(lang)"
-                  class="px-3 py-1.5 rounded-xl text-xs font-medium border transition-all duration-150"
-                  :class="uploadForm.languages.includes(lang)
-                    ? 'bg-sakura-100 border-sakura-300 text-sakura-700 shadow-sm'
-                    : 'bg-white border-ink-200 text-ink-400 hover:border-sakura-200'"
-                >
-                  {{ lang }}
-                </button>
-              </div>
-              <label class="flex items-center gap-2 text-sm text-ink-600">
-                <input type="checkbox" v-model="uploadForm.has_fonts" class="rounded" />
-                {{ t('sharingHasFonts') }}
-              </label>
-            </div>
-
-            <!-- Step 3: Upload file -->
-            <div class="flex flex-col gap-3">
-              <div class="flex items-center gap-2 mb-1">
-                <div class="w-6 h-6 rounded-full bg-mint-100 flex items-center justify-center text-xs font-bold text-mint-500">3</div>
-                <span class="text-sm font-semibold text-ink-700">{{ t('sharingDropZone') }}</span>
-              </div>
-              <div>
-                <label class="text-xs font-medium text-ink-500 mb-1.5 block">{{ t('sharingContributor') }}</label>
-                <input v-model="uploadForm.contributor" class="w-full px-3 py-2 rounded-xl border border-sakura-200 text-sm focus:outline-none focus:ring-2 focus:ring-sakura-300/50" :placeholder="t('sharingContributorPlaceholder')" />
-              </div>
-              <div
-                @drop.prevent="handleDrop"
-                @dragover.prevent="dropHover = true"
-                @dragleave.prevent="dropHover = false"
-                @click="($refs.contribFileInput as HTMLInputElement)?.click()"
-                class="relative border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all duration-200"
-                :class="dropHover
-                  ? 'border-sakura-400 bg-sakura-50/60 scale-[1.01]'
-                  : uploadFile
-                    ? 'border-mint-300 bg-mint-50/30'
-                    : 'border-sakura-200 hover:border-sakura-300 hover:bg-sakura-50/30'"
-              >
-                <div v-if="!uploadFile" class="flex flex-col items-center gap-2">
-                  <div class="w-12 h-12 rounded-2xl bg-ink-100 flex items-center justify-center">
-                    <FileArchive class="w-6 h-6 text-ink-400" />
-                  </div>
-                  <p class="text-sm text-ink-500 font-medium">{{ t('sharingDropZone') }}</p>
-                  <p class="text-xs text-ink-300">{{ t('sharingMaxSize') }}</p>
-                </div>
-                <div v-else class="flex flex-col items-center gap-2">
-                  <div class="w-12 h-12 rounded-2xl bg-mint-100 flex items-center justify-center">
-                    <FileArchive class="w-6 h-6 text-mint-500" />
-                  </div>
-                  <p class="text-sm text-ink-700 font-semibold truncate max-w-full">{{ uploadFile.name }}</p>
-                  <KBadge variant="success">{{ uploadDetected }}</KBadge>
-                </div>
-                <input ref="contribFileInput" type="file" accept=".zip" class="hidden" @change="handleFileSelect($event)" />
-              </div>
-            </div>
-          </div>
-
-          <!-- Modal footer -->
-          <div class="px-6 py-4 border-t border-sakura-100/60 flex justify-end gap-2">
-            <KButton variant="ghost" @click="showContributeModal = false; resetForm()">{{ t('cancel') }}</KButton>
-            <KButton
-              variant="primary"
-              :disabled="!uploadForm.name_cn || !uploadForm.sub_group || !uploadForm.languages.length || !uploadFile || uploadSubmitting"
-              :loading="uploadSubmitting"
-              @click="submitContribute"
-            >
-              <Upload class="w-4 h-4" />
-              {{ t('sharingSubmit') }}
-            </KButton>
-          </div>
+          <h2 class="font-display font-bold text-xl text-ink-900 mb-2">{{ t('sharingUploadSuccess') }}</h2>
+          <p class="text-sm text-ink-400">{{ t('sharingUploadSuccessDesc') }}</p>
         </div>
+
+        <!-- Upload form -->
+        <template v-else>
+          <!-- Title card -->
+          <div class="card p-6 bg-gradient-to-br from-white to-sakura-50/30">
+            <div class="flex items-center gap-3 mb-1">
+              <div class="w-10 h-10 rounded-xl bg-sakura-100 flex items-center justify-center shrink-0">
+                <CloudUpload class="w-5 h-5 text-sakura-500" />
+              </div>
+              <div>
+                <h2 class="font-display font-bold text-xl text-ink-900">{{ t('sharingContributeFormTitle') }}</h2>
+                <p class="text-xs text-ink-400 mt-0.5">{{ t('sharingContributeFormDesc') }}</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Two-column layout: Form + File -->
+          <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
+            <!-- Left: Metadata form (3/5 width) -->
+            <div class="lg:col-span-3 card p-6">
+              <h3 class="font-display font-semibold text-ink-800 text-sm mb-4 flex items-center gap-2">
+                <Tv class="w-4 h-4 text-sky-400" />
+                {{ t('sharingAnimeInfo') }}
+              </h3>
+
+              <div class="flex flex-col gap-4">
+                <!-- Row 1: Anime name + Letter -->
+                <div class="flex gap-3">
+                  <div class="flex-1">
+                    <label class="text-xs font-medium text-ink-500 mb-1.5 block">{{ t('sharingAnimeName') }} *</label>
+                    <input
+                      v-model="uploadForm.name_cn"
+                      class="w-full px-3.5 py-2.5 rounded-xl border border-ink-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sakura-300/50 focus:border-sakura-300 transition-all duration-150"
+                      :placeholder="t('sharingAnimeNamePlaceholder')"
+                    />
+                  </div>
+                  <div class="w-20">
+                    <label class="text-xs font-medium text-ink-500 mb-1.5 block">{{ t('sharingLetter') }}</label>
+                    <input
+                      v-model="uploadForm.letter"
+                      maxlength="1"
+                      class="w-full px-3 py-2.5 rounded-xl border border-ink-200 text-sm text-center uppercase bg-white focus:outline-none focus:ring-2 focus:ring-sakura-300/50 focus:border-sakura-300 transition-all duration-150"
+                      placeholder="A"
+                    />
+                  </div>
+                </div>
+
+                <!-- Row 2: Season + Sub group -->
+                <div class="flex gap-3">
+                  <div class="w-32">
+                    <label class="text-xs font-medium text-ink-500 mb-1.5 block">{{ t('sharingSeason') }} *</label>
+                    <select
+                      v-model="uploadForm.season"
+                      class="w-full px-3 py-2.5 rounded-xl border border-ink-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sakura-300/50 focus:border-sakura-300 transition-all duration-150"
+                    >
+                      <option v-for="s in ['S1','S2','S3','S4','Movie','SPs','OVA']" :key="s" :value="s">{{ s }}</option>
+                    </select>
+                  </div>
+                  <div class="flex-1">
+                    <label class="text-xs font-medium text-ink-500 mb-1.5 block">{{ t('sharingSubGroup') }} *</label>
+                    <input
+                      v-model="uploadForm.sub_group"
+                      class="w-full px-3.5 py-2.5 rounded-xl border border-ink-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sakura-300/50 focus:border-sakura-300 transition-all duration-150"
+                      :placeholder="t('sharingSubGroupPlaceholder')"
+                    />
+                  </div>
+                </div>
+
+                <!-- Row 3: Languages -->
+                <div>
+                  <label class="text-xs font-medium text-ink-500 mb-2 block">{{ t('sharingLanguages') }} *</label>
+                  <div class="flex flex-wrap gap-2">
+                    <button
+                      v-for="lang in LANG_OPTIONS"
+                      :key="lang"
+                      @click="toggleLang(lang)"
+                      class="px-3.5 py-2 rounded-xl text-xs font-medium border-2 transition-all duration-150"
+                      :class="uploadForm.languages.includes(lang)
+                        ? 'bg-sakura-50 border-sakura-300 text-sakura-700 shadow-sm'
+                        : 'bg-white border-ink-100 text-ink-400 hover:border-sakura-200 hover:text-ink-600'"
+                    >
+                      {{ lang }}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Row 4: Options -->
+                <div class="flex items-center justify-between pt-1">
+                  <label class="flex items-center gap-2.5 text-sm text-ink-600 cursor-pointer select-none">
+                    <input type="checkbox" v-model="uploadForm.has_fonts" class="rounded border-ink-300 text-sakura-500 focus:ring-sakura-300" />
+                    {{ t('sharingHasFonts') }}
+                  </label>
+                </div>
+
+                <!-- Row 5: Contributor -->
+                <div>
+                  <label class="text-xs font-medium text-ink-500 mb-1.5 block">{{ t('sharingContributor') }}</label>
+                  <input
+                    v-model="uploadForm.contributor"
+                    class="w-full px-3.5 py-2.5 rounded-xl border border-ink-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sakura-300/50 focus:border-sakura-300 transition-all duration-150"
+                    :placeholder="t('sharingContributorPlaceholder')"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <!-- Right: File upload zone (2/5 width) -->
+            <div class="lg:col-span-2 flex flex-col gap-4">
+              <div class="card p-6 flex-1 flex flex-col">
+                <h3 class="font-display font-semibold text-ink-800 text-sm mb-4 flex items-center gap-2">
+                  <FileArchive class="w-4 h-4 text-mint-400" />
+                  {{ t('sharingFileUpload') }}
+                </h3>
+
+                <!-- Drop zone -->
+                <div
+                  @drop.prevent="handleDrop"
+                  @dragover.prevent="dropHover = true"
+                  @dragleave.prevent="dropHover = false"
+                  @click="($refs.contribFileInput as HTMLInputElement)?.click()"
+                  class="flex-1 min-h-[200px] flex flex-col items-center justify-center border-2 border-dashed rounded-2xl p-6 cursor-pointer transition-all duration-200"
+                  :class="dropHover
+                    ? 'border-sakura-400 bg-sakura-50/60 scale-[1.01]'
+                    : uploadFile
+                      ? 'border-mint-300 bg-mint-50/20'
+                      : 'border-ink-200 hover:border-sakura-300 hover:bg-sakura-50/20'"
+                >
+                  <!-- Empty state -->
+                  <template v-if="!uploadFile">
+                    <div class="w-16 h-16 rounded-2xl bg-ink-50 flex items-center justify-center mb-3">
+                      <CloudUpload class="w-8 h-8 text-ink-300" />
+                    </div>
+                    <p class="text-sm text-ink-500 font-medium text-center">{{ t('sharingDropZone') }}</p>
+                    <p class="text-xs text-ink-300 mt-1">{{ t('sharingMaxSize') }}</p>
+                  </template>
+                  <!-- File selected -->
+                  <template v-else>
+                    <div class="w-16 h-16 rounded-2xl bg-mint-100 flex items-center justify-center mb-3">
+                      <FileArchive class="w-8 h-8 text-mint-500" />
+                    </div>
+                    <p class="text-sm text-ink-700 font-semibold truncate max-w-full text-center">{{ uploadFile.name }}</p>
+                    <KBadge variant="success" class="mt-2">{{ uploadDetected }}</KBadge>
+                    <button
+                      @click.stop="uploadFile = null; uploadDetected = ''"
+                      class="mt-2 text-xs text-ink-400 hover:text-ink-600 transition-colors duration-150"
+                    >
+                      {{ t('sharingChangeFile') }}
+                    </button>
+                  </template>
+                  <input ref="contribFileInput" type="file" accept=".zip" class="hidden" @change="handleFileSelect($event)" />
+                </div>
+              </div>
+
+              <!-- Error message -->
+              <div v-if="uploadError" class="card p-4 border-red-200 bg-red-50/50">
+                <div class="flex items-start gap-2">
+                  <AlertCircle class="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                  <p class="text-sm text-red-600">{{ uploadError }}</p>
+                </div>
+              </div>
+
+              <!-- Submit button -->
+              <KButton
+                variant="primary"
+                size="lg"
+                :disabled="!canSubmit"
+                :loading="uploadSubmitting"
+                @click="submitContribute"
+                class="w-full justify-center"
+              >
+                <Upload class="w-4 h-4" />
+                {{ t('sharingSubmit') }}
+              </KButton>
+            </div>
+          </div>
+        </template>
       </div>
     </Transition>
 
@@ -709,12 +817,16 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.modal-enter-active,
-.modal-leave-active {
-  transition: opacity 0.2s ease;
+.slide-enter-active,
+.slide-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
 }
-.modal-enter-from,
-.modal-leave-to {
+.slide-enter-from {
   opacity: 0;
+  transform: translateY(12px);
+}
+.slide-leave-to {
+  opacity: 0;
+  transform: translateY(-12px);
 }
 </style>

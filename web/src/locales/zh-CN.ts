@@ -249,4 +249,12 @@ export default {
   sharingPendingReview: "待审核贡献",
   sharingNoPending: "暂无待审核内容",
   sharingAdminUploadTitle: "上传并发布归档",
+  sharingContributeFormDesc: "填写字幕信息并上传 zip 文件，管理员审核通过后即可公开",
+  sharingAnimeInfo: "番剧信息",
+  sharingAnimeNamePlaceholder: "例如：孤独摇滚",
+  sharingSubGroupPlaceholder: "例如：LoliHouse",
+  sharingFileUpload: "文件上传",
+  sharingChangeFile: "更换文件",
+  sharingUploadSuccess: "提交成功！",
+  sharingUploadSuccessDesc: "管理员将尽快审核你的贡献，通过后即可在分享页面看到。",
 }
