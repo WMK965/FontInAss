@@ -3,25 +3,19 @@ import { ref, computed, onMounted, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { debounce } from "lodash-es";
 import {
-  Share2, Search, X, Tv, Download, Clock, Upload, Heart,
-  Paperclip, DatabaseZap, Check, XCircle, FileArchive,
+  Share2, Search, X, Tv, Download, Upload, Heart,
+  Paperclip, FileArchive, FolderOpen, ChevronRight, Home,
 } from "lucide-vue-next";
 import KButton from "../components/KButton.vue";
 import KBadge from "../components/KBadge.vue";
 import KEmpty from "../components/KEmpty.vue";
 import KSpinner from "../components/KSpinner.vue";
-import { getApiKey } from "../api/client";
 import type { SharedArchive } from "../api/client";
 import {
   listSharedArchives,
-  listPendingArchives,
-  uploadSharedArchive,
   contributeArchive,
-  approveArchive,
-  rejectArchive,
-  importIndexSSE,
 } from "../api/client";
-import { buildSearchIndex, searchArchives, clearSearchIndex } from "../lib/search";
+import { buildSearchIndex, searchArchives } from "../lib/search";
 
 const { t } = useI18n();
 
@@ -29,8 +23,6 @@ const { t } = useI18n();
 
 const loading = ref(true);
 const archives = ref<SharedArchive[]>([]);
-const pendingArchives = ref<SharedArchive[]>([]);
-const hasApiKey = computed(() => !!getApiKey());
 
 // Search & filter
 const searchQuery = ref("");
@@ -39,12 +31,9 @@ const filterGroup = ref("");
 const isSearching = computed(() => searchQuery.value.trim().length > 0);
 const searchResultIds = ref<Set<string>>(new Set());
 
-// Letter navigation
-const activeLetter = ref("");
-const availableLetters = computed(() => {
-  const letters = new Set(archives.value.map((a) => a.letter));
-  return [...letters].sort();
-});
+// Folder navigation: currentPath = [] → root, ['B'] → letter, ['B','BanG Dream!'] → anime, ['B','BanG Dream!','S1'] → season
+const currentPath = ref<string[]>([]);
+const navDepth = computed(() => currentPath.value.length);
 
 // Unique languages and sub groups for filter dropdowns
 const allLanguages = computed(() => {
@@ -72,7 +61,7 @@ const stats = computed(() => {
   };
 });
 
-// ─── Grouped data for browse mode ─────────────────────────────────────────────
+// ─── Grouped data structures ──────────────────────────────────────────────────
 
 interface AnimeGroup {
   name_cn: string;
@@ -98,48 +87,80 @@ const filteredArchives = computed(() => {
   return list;
 });
 
-const groupedData = computed(() => {
-  const byLetter = new Map<string, Map<string, SharedArchive[]>>();
-
+// Level 0: letter folders with anime counts
+const letterFolders = computed(() => {
+  const map = new Map<string, Set<string>>();
   for (const a of filteredArchives.value) {
-    if (!byLetter.has(a.letter)) byLetter.set(a.letter, new Map());
-    const letterMap = byLetter.get(a.letter)!;
-    if (!letterMap.has(a.name_cn)) letterMap.set(a.name_cn, []);
-    letterMap.get(a.name_cn)!.push(a);
+    if (!map.has(a.letter)) map.set(a.letter, new Set());
+    map.get(a.letter)!.add(a.name_cn);
   }
-
-  const result: [string, AnimeGroup[]][] = [];
-  for (const [letter, animeMap] of [...byLetter].sort(([a], [b]) => a.localeCompare(b))) {
-    const animes: AnimeGroup[] = [];
-    for (const [name_cn, archiveList] of [...animeMap].sort(([a], [b]) => a.localeCompare(b))) {
-      const seasonMap = new Map<string, SharedArchive[]>();
-      for (const a of archiveList) {
-        if (!seasonMap.has(a.season)) seasonMap.set(a.season, []);
-        seasonMap.get(a.season)!.push(a);
-      }
-
-      let subEntries: string[] | null = null;
-      for (const a of archiveList) {
-        if (a.sub_entries) {
-          try { subEntries = JSON.parse(a.sub_entries); } catch {}
-          break;
-        }
-      }
-
-      animes.push({
-        name_cn,
-        seasons: [...seasonMap]
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([name, archives]) => ({ name, archives })),
-        totalSeasons: seasonMap.size,
-        totalArchives: archiveList.length,
-        sub_entries: subEntries,
-      });
-    }
-    result.push([letter, animes]);
-  }
-  return result;
+  return [...map.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([letter, animeSet]) => ({ letter, count: animeSet.size }));
 });
+
+// Level 1: anime list for a given letter
+const animeFolders = computed(() => {
+  if (navDepth.value < 1) return [];
+  const letter = currentPath.value[0];
+  const animeMap = new Map<string, SharedArchive[]>();
+  for (const a of filteredArchives.value) {
+    if (a.letter !== letter) continue;
+    if (!animeMap.has(a.name_cn)) animeMap.set(a.name_cn, []);
+    animeMap.get(a.name_cn)!.push(a);
+  }
+  return [...animeMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, list]) => {
+      const seasons = new Set(list.map(a => a.season));
+      return { name, seasonCount: seasons.size, archiveCount: list.length };
+    });
+});
+
+// Level 2: seasons for a given anime
+const seasonFolders = computed(() => {
+  if (navDepth.value < 2) return [];
+  const [letter, animeName] = currentPath.value;
+  const seasonMap = new Map<string, SharedArchive[]>();
+  let subEntries: string[] | null = null;
+  for (const a of filteredArchives.value) {
+    if (a.letter !== letter || a.name_cn !== animeName) continue;
+    if (!seasonMap.has(a.season)) seasonMap.set(a.season, []);
+    seasonMap.get(a.season)!.push(a);
+    if (!subEntries && a.sub_entries) {
+      try { subEntries = JSON.parse(a.sub_entries); } catch {}
+    }
+  }
+  return {
+    seasons: [...seasonMap.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, archives]) => ({ name, archiveCount: archives.length })),
+    subEntries,
+  };
+});
+
+// Level 3: archives for a given season
+const seasonArchives = computed(() => {
+  if (navDepth.value < 3) return [];
+  const [letter, animeName, season] = currentPath.value;
+  return filteredArchives.value.filter(
+    a => a.letter === letter && a.name_cn === animeName && a.season === season
+  );
+});
+
+// ─── Navigation ───────────────────────────────────────────────────────────────
+
+function navigateTo(depth: number, segment?: string) {
+  if (segment !== undefined) {
+    currentPath.value = [...currentPath.value.slice(0, depth), segment];
+  } else {
+    currentPath.value = currentPath.value.slice(0, depth);
+  }
+}
+
+function goRoot() {
+  currentPath.value = [];
+}
 
 // ─── Search ───────────────────────────────────────────────────────────────────
 
@@ -157,21 +178,9 @@ function clearSearch() {
   searchResultIds.value = new Set();
 }
 
-// ─── Letter navigation ───────────────────────────────────────────────────────
+// ─── Contribute Modal ─────────────────────────────────────────────────────────
 
-function scrollToLetter(letter: string) {
-  const el = document.getElementById(`letter-${letter}`);
-  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-// ─── Modals ───────────────────────────────────────────────────────────────────
-
-const showUploadModal = ref(false);
 const showContributeModal = ref(false);
-const showPendingPanel = ref(false);
-const showImportModal = ref(false);
-
-// Upload form state
 const uploadForm = ref({
   name_cn: "",
   letter: "",
@@ -184,10 +193,73 @@ const uploadForm = ref({
 const uploadFile = ref<File | null>(null);
 const uploadSubmitting = ref(false);
 const uploadDetected = ref("");
+const dropHover = ref(false);
 
-// Import state
-const importProgress = ref<{ phase: string; message?: string; current?: number; total?: number }>({ phase: "idle" });
-const isImporting = ref(false);
+const LANG_OPTIONS = ["chs", "cht", "jpn", "chs_jpn", "cht_jpn", "sc", "tc", "eng"];
+
+function toggleLang(lang: string) {
+  const idx = uploadForm.value.languages.indexOf(lang);
+  if (idx >= 0) uploadForm.value.languages.splice(idx, 1);
+  else uploadForm.value.languages.push(lang);
+}
+
+function handleFileSelect(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (file) {
+    uploadFile.value = file;
+    uploadDetected.value = `${formatSize(file.size)}`;
+  }
+}
+
+function handleDrop(e: DragEvent) {
+  e.preventDefault();
+  dropHover.value = false;
+  const file = e.dataTransfer?.files[0];
+  if (file && file.name.endsWith(".zip")) {
+    uploadFile.value = file;
+    uploadDetected.value = `${formatSize(file.size)}`;
+  }
+}
+
+function resetForm() {
+  uploadForm.value = { name_cn: "", letter: "", season: "S1", sub_group: "", languages: [], has_fonts: false, contributor: "" };
+  uploadFile.value = null;
+  uploadDetected.value = "";
+}
+
+async function submitContribute() {
+  if (!uploadFile.value || uploadSubmitting.value) return;
+  const meta = {
+    name_cn: uploadForm.value.name_cn,
+    letter: uploadForm.value.letter.toUpperCase(),
+    season: uploadForm.value.season,
+    sub_group: uploadForm.value.sub_group,
+    languages: uploadForm.value.languages,
+    has_fonts: uploadForm.value.has_fonts,
+    contributor: uploadForm.value.contributor || undefined,
+  };
+  uploadSubmitting.value = true;
+  try {
+    await contributeArchive(uploadFile.value, meta);
+    showContributeModal.value = false;
+    resetForm();
+    await loadArchives();
+  } catch (e) {
+    console.error("Upload error:", e);
+    alert(String(e));
+  } finally {
+    uploadSubmitting.value = false;
+  }
+}
+
+// Auto-generate letter from name
+watch(() => uploadForm.value.name_cn, (name) => {
+  if (name && !uploadForm.value.letter) {
+    const first = name.charAt(0).toUpperCase();
+    if (/[A-Z]/.test(first)) uploadForm.value.letter = first;
+  }
+});
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -195,7 +267,6 @@ async function loadArchives() {
   loading.value = true;
   try {
     archives.value = await listSharedArchives();
-    // Build search index
     buildSearchIndex(
       archives.value.map((a) => ({
         id: a.id,
@@ -211,103 +282,6 @@ async function loadArchives() {
   } finally {
     loading.value = false;
   }
-}
-
-async function loadPending() {
-  if (!hasApiKey.value) return;
-  try {
-    pendingArchives.value = await listPendingArchives();
-  } catch (e) {
-    console.error("Failed to load pending:", e);
-  }
-}
-
-function handleFileSelect(e: Event, isContribute = false) {
-  const input = e.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (file) {
-    uploadFile.value = file;
-    uploadDetected.value = `${formatSize(file.size)}`;
-  }
-}
-
-function handleDrop(e: DragEvent) {
-  e.preventDefault();
-  const file = e.dataTransfer?.files[0];
-  if (file && file.name.endsWith(".zip")) {
-    uploadFile.value = file;
-    uploadDetected.value = `${formatSize(file.size)}`;
-  }
-}
-
-async function submitUpload(isContribute: boolean) {
-  if (!uploadFile.value || uploadSubmitting.value) return;
-
-  const meta = {
-    name_cn: uploadForm.value.name_cn,
-    letter: uploadForm.value.letter.toUpperCase(),
-    season: uploadForm.value.season,
-    sub_group: uploadForm.value.sub_group,
-    languages: uploadForm.value.languages,
-    has_fonts: uploadForm.value.has_fonts,
-    ...(isContribute ? { contributor: uploadForm.value.contributor || undefined } : {}),
-  };
-
-  uploadSubmitting.value = true;
-  try {
-    if (isContribute) {
-      await contributeArchive(uploadFile.value, meta);
-      showContributeModal.value = false;
-    } else {
-      await uploadSharedArchive(uploadFile.value, meta);
-      showUploadModal.value = false;
-    }
-    resetForm();
-    await loadArchives();
-    if (hasApiKey.value) await loadPending();
-  } catch (e) {
-    console.error("Upload error:", e);
-    alert(String(e));
-  } finally {
-    uploadSubmitting.value = false;
-  }
-}
-
-function resetForm() {
-  uploadForm.value = { name_cn: "", letter: "", season: "S1", sub_group: "", languages: [], has_fonts: false, contributor: "" };
-  uploadFile.value = null;
-  uploadDetected.value = "";
-}
-
-async function handleApprove(id: string) {
-  try {
-    await approveArchive(id);
-    await loadPending();
-    await loadArchives();
-  } catch (e) {
-    alert(String(e));
-  }
-}
-
-async function handleReject(id: string) {
-  try {
-    await rejectArchive(id);
-    await loadPending();
-  } catch (e) {
-    alert(String(e));
-  }
-}
-
-function startImport() {
-  isImporting.value = true;
-  showImportModal.value = true;
-  importProgress.value = { phase: "index", message: "Starting import..." };
-
-  importIndexSSE(
-    (data) => { importProgress.value = data; },
-    () => { isImporting.value = false; loadArchives(); if (hasApiKey.value) loadPending(); },
-    (err) => { isImporting.value = false; importProgress.value = { phase: "error", message: err }; },
-  );
 }
 
 function downloadArchive(archive: SharedArchive) {
@@ -333,32 +307,15 @@ function parseFmts(json: string): string[] {
   try { return JSON.parse(json); } catch { return []; }
 }
 
-const LANG_OPTIONS = ["chs", "cht", "jpn", "chs_jpn", "cht_jpn", "sc", "tc", "eng"];
-
-function toggleLang(lang: string) {
-  const idx = uploadForm.value.languages.indexOf(lang);
-  if (idx >= 0) uploadForm.value.languages.splice(idx, 1);
-  else uploadForm.value.languages.push(lang);
-}
-
-// Auto-generate letter from name
-watch(() => uploadForm.value.name_cn, (name) => {
-  if (name && !uploadForm.value.letter) {
-    const first = name.charAt(0).toUpperCase();
-    if (/[A-Z]/.test(first)) uploadForm.value.letter = first;
-  }
-});
-
 onMounted(() => {
   loadArchives();
-  if (hasApiKey.value) loadPending();
 });
 </script>
 
 <template>
   <div class="flex flex-col gap-6 animate-fade-in">
 
-    <!-- ═══ Header: Stats + Search + Admin ═══ -->
+    <!-- ═══ Header: Stats + Search ═══ -->
     <section class="card p-6 bg-gradient-to-br from-white to-sakura-50/40">
       <div class="flex items-start justify-between gap-4 mb-4 flex-wrap">
         <div class="flex items-center gap-3">
@@ -375,22 +332,6 @@ onMounted(() => {
               {{ stats.subGroupCount }} {{ t('sharingGroupCount') }}
             </p>
           </div>
-        </div>
-
-        <div v-if="hasApiKey" class="flex gap-2 shrink-0 flex-wrap">
-          <KButton variant="ghost" size="sm" @click="showPendingPanel = !showPendingPanel">
-            <Clock class="w-4 h-4" />
-            {{ t('sharingPending') }}
-            <KBadge v-if="pendingArchives.length > 0" variant="warning">{{ pendingArchives.length }}</KBadge>
-          </KButton>
-          <KButton variant="ghost" size="sm" @click="showUploadModal = true">
-            <Upload class="w-4 h-4" />
-            {{ t('sharingAdminUpload') }}
-          </KButton>
-          <KButton variant="ghost" size="sm" @click="startImport" :disabled="isImporting">
-            <DatabaseZap class="w-4 h-4" />
-            {{ t('sharingImportIndex') }}
-          </KButton>
         </div>
       </div>
 
@@ -427,66 +368,6 @@ onMounted(() => {
       </div>
     </section>
 
-    <!-- ═══ Pending Review Panel (Admin) ═══ -->
-    <section v-if="showPendingPanel && hasApiKey && pendingArchives.length > 0" class="card p-4">
-      <h3 class="font-display font-semibold text-ink-800 text-sm mb-3 flex items-center gap-2">
-        <Clock class="w-4 h-4 text-amber-500" />
-        {{ t('sharingPending') }} ({{ pendingArchives.length }})
-      </h3>
-      <div class="flex flex-col gap-2">
-        <div
-          v-for="pa in pendingArchives"
-          :key="pa.id"
-          class="flex items-center gap-3 p-3 rounded-xl bg-amber-50/50 border border-amber-200/50"
-        >
-          <div class="flex-1 min-w-0">
-            <p class="text-sm font-medium text-ink-800 truncate">
-              {{ pa.name_cn }} {{ pa.season }} · {{ pa.sub_group }}
-            </p>
-            <p class="text-xs text-ink-400">
-              {{ pa.contributor || 'anonymous' }} · {{ formatSize(pa.file_size) }} · {{ pa.filename }}
-            </p>
-          </div>
-          <KButton variant="ghost" size="sm" @click="handleApprove(pa.id)">
-            <Check class="w-4 h-4 text-mint-500" />
-            {{ t('sharingApprove') }}
-          </KButton>
-          <KButton variant="ghost" size="sm" @click="handleReject(pa.id)">
-            <XCircle class="w-4 h-4 text-rose-400" />
-            {{ t('sharingReject') }}
-          </KButton>
-        </div>
-      </div>
-    </section>
-
-    <!-- ═══ Import Progress ═══ -->
-    <section v-if="showImportModal" class="card p-4">
-      <h3 class="font-display font-semibold text-ink-800 text-sm mb-2 flex items-center gap-2">
-        <DatabaseZap class="w-4 h-4 text-sakura-500" />
-        {{ isImporting ? t('sharingImporting') : t('sharingImportDone') }}
-      </h3>
-      <div class="text-sm text-ink-500">
-        <p v-if="importProgress.message">{{ importProgress.message }}</p>
-        <p v-if="importProgress.current != null">
-          {{ importProgress.current }} / {{ importProgress.total }}
-          <span v-if="importProgress.name" class="text-ink-400">— {{ importProgress.name }}</span>
-        </p>
-        <p v-if="importProgress.phase === 'done'" class="text-mint-600 font-medium mt-1">
-          ✓ {{ t('sharingImportDone') }}:
-          {{ (importProgress as any).imported }} imported,
-          {{ (importProgress as any).skipped }} skipped,
-          {{ (importProgress as any).errors }} errors
-          ({{ (importProgress as any).elapsed }})
-        </p>
-        <p v-if="importProgress.phase === 'error'" class="text-rose-500 font-medium mt-1">
-          ✗ {{ importProgress.message }}
-        </p>
-      </div>
-      <KButton v-if="!isImporting" variant="ghost" size="sm" class="mt-2" @click="showImportModal = false">
-        {{ t('cancel') }}
-      </KButton>
-    </section>
-
     <!-- ═══ Loading ═══ -->
     <div v-if="loading" class="flex justify-center py-16">
       <KSpinner />
@@ -499,108 +380,150 @@ onMounted(() => {
       :description="t('sharingNoArchivesDesc')"
     />
 
-    <!-- ═══ Letter Navigation (Sticky) ═══ -->
+    <!-- ═══ Breadcrumb Navigation ═══ -->
     <nav
-      v-if="!loading && archives.length > 0 && !isSearching"
-      class="sticky top-14 z-20 bg-bg/80 backdrop-blur-sm border-b border-sakura-100/40 py-2 -mx-4 px-4"
+      v-if="!loading && archives.length > 0 && !isSearching && navDepth > 0"
+      class="flex items-center gap-1.5 text-sm flex-wrap"
     >
-      <div class="flex flex-wrap gap-1.5 justify-center max-w-4xl mx-auto">
+      <button
+        @click="goRoot"
+        class="flex items-center gap-1 text-sakura-500 hover:text-sakura-600 transition-colors duration-150 font-medium"
+      >
+        <Home class="w-3.5 h-3.5" />
+        {{ t('sharingBreadcrumbRoot') }}
+      </button>
+      <template v-for="(seg, idx) in currentPath" :key="idx">
+        <ChevronRight class="w-3.5 h-3.5 text-ink-300 shrink-0" />
         <button
-          v-for="letter in availableLetters"
-          :key="letter"
-          @click="scrollToLetter(letter)"
-          class="w-8 h-8 rounded-lg text-xs font-semibold transition-all duration-200"
-          :class="activeLetter === letter
-            ? 'bg-sakura-400 text-white shadow-sm'
-            : 'bg-white text-ink-500 border border-sakura-100 hover:bg-sakura-50 hover:text-sakura-600'"
+          v-if="idx < navDepth - 1"
+          @click="navigateTo(idx + 1)"
+          class="text-sakura-500 hover:text-sakura-600 transition-colors duration-150 font-medium truncate max-w-48"
         >
-          {{ letter }}
+          {{ seg }}
         </button>
-      </div>
+        <span v-else class="text-ink-700 font-semibold truncate max-w-48">{{ seg }}</span>
+      </template>
     </nav>
 
-    <!-- ═══ Browse Mode: Grouped by letter → anime → season ═══ -->
-    <div v-if="!loading && archives.length > 0 && !isSearching">
-      <template v-for="[letter, animes] in groupedData" :key="letter">
-        <!-- Letter divider -->
-        <div :id="`letter-${letter}`" class="flex items-center gap-3 mt-8 mb-4 scroll-mt-28">
-          <span class="font-display font-bold text-xl text-sakura-400">{{ letter }}</span>
-          <div class="flex-1 h-px bg-sakura-200/60"></div>
-          <span class="text-xs text-ink-300">{{ animes.length }}</span>
+    <!-- ═══ Level 0: Letter Folder Grid ═══ -->
+    <div
+      v-if="!loading && archives.length > 0 && !isSearching && navDepth === 0"
+      class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4"
+    >
+      <button
+        v-for="item in letterFolders"
+        :key="item.letter"
+        @click="navigateTo(0, item.letter)"
+        class="card p-5 flex flex-col items-center gap-3 hover:shadow-md hover:border-sakura-200 transition-all duration-200 cursor-pointer group active:scale-[0.97]"
+      >
+        <div class="w-12 h-12 rounded-2xl bg-sakura-50 group-hover:bg-sakura-100 flex items-center justify-center transition-colors duration-200">
+          <FolderOpen class="w-6 h-6 text-sakura-400 group-hover:text-sakura-500 transition-colors duration-200" />
+        </div>
+        <span class="font-display font-bold text-2xl text-ink-800">{{ item.letter }}</span>
+        <KBadge variant="default">{{ t('sharingLetterFolder', { count: item.count }) }}</KBadge>
+      </button>
+    </div>
+
+    <!-- ═══ Level 1: Anime List ═══ -->
+    <div
+      v-if="!loading && archives.length > 0 && !isSearching && navDepth === 1"
+      class="flex flex-col gap-3"
+    >
+      <button
+        v-for="item in animeFolders"
+        :key="item.name"
+        @click="navigateTo(1, item.name)"
+        class="card px-5 py-4 flex items-center gap-4 hover:shadow-md hover:border-sakura-200 transition-all duration-200 cursor-pointer group active:scale-[0.99] text-left"
+      >
+        <div class="w-10 h-10 rounded-xl bg-sky-50 group-hover:bg-sky-100 flex items-center justify-center shrink-0 transition-colors duration-200">
+          <Tv class="w-5 h-5 text-sky-400 group-hover:text-sky-500 transition-colors duration-200" />
+        </div>
+        <div class="flex-1 min-w-0">
+          <p class="font-display font-semibold text-ink-900 text-base truncate">{{ item.name }}</p>
+          <p class="text-xs text-ink-400 mt-0.5">
+            {{ t('sharingAnimeFolder', { count: item.seasonCount }) }} · {{ item.archiveCount }} {{ t('sharingArchives') }}
+          </p>
+        </div>
+        <ChevronRight class="w-4 h-4 text-ink-300 group-hover:text-sakura-400 shrink-0 transition-colors duration-200" />
+      </button>
+      <KEmpty v-if="animeFolders.length === 0" :title="t('sharingNoResults')" />
+    </div>
+
+    <!-- ═══ Level 2: Season List ═══ -->
+    <div
+      v-if="!loading && archives.length > 0 && !isSearching && navDepth === 2"
+      class="flex flex-col gap-3"
+    >
+      <button
+        v-for="item in seasonFolders.seasons"
+        :key="item.name"
+        @click="navigateTo(2, item.name)"
+        class="card px-5 py-4 flex items-center gap-4 hover:shadow-md hover:border-sakura-200 transition-all duration-200 cursor-pointer group active:scale-[0.99] text-left"
+      >
+        <div class="w-10 h-10 rounded-xl bg-mint-50 group-hover:bg-mint-100 flex items-center justify-center shrink-0 transition-colors duration-200">
+          <FolderOpen class="w-5 h-5 text-mint-400 group-hover:text-mint-500 transition-colors duration-200" />
+        </div>
+        <div class="flex-1 min-w-0">
+          <p class="font-display font-semibold text-ink-900 text-base">{{ item.name }}</p>
+          <p class="text-xs text-ink-400 mt-0.5">{{ t('sharingSeasonFolder', { count: item.archiveCount }) }}</p>
+        </div>
+        <ChevronRight class="w-4 h-4 text-ink-300 group-hover:text-sakura-400 shrink-0 transition-colors duration-200" />
+      </button>
+
+      <!-- Sub-entries info -->
+      <div v-if="seasonFolders.subEntries?.length" class="card px-5 py-3 bg-sakura-50/30">
+        <p class="text-[11px] text-ink-400 flex items-center gap-1.5">
+          <Paperclip class="w-3 h-3 shrink-0" />
+          {{ t('sharingIncludes') }}: {{ seasonFolders.subEntries.join(' · ') }}
+        </p>
+      </div>
+      <KEmpty v-if="seasonFolders.seasons.length === 0" :title="t('sharingNoResults')" />
+    </div>
+
+    <!-- ═══ Level 3: Archive Files ═══ -->
+    <div
+      v-if="!loading && archives.length > 0 && !isSearching && navDepth === 3"
+      class="flex flex-col gap-2"
+    >
+      <div
+        v-for="archive in seasonArchives"
+        :key="archive.id"
+        class="card px-5 py-3 flex items-center gap-3 hover:shadow-md transition-all duration-200 group"
+      >
+        <FileArchive class="w-5 h-5 text-ink-300 shrink-0" />
+
+        <KBadge variant="sakura" class="shrink-0 max-w-[120px] truncate">
+          {{ archive.sub_group }}
+        </KBadge>
+
+        <div class="flex items-center gap-1.5 flex-1 min-w-0 flex-wrap">
+          <span v-if="archive.episode_count" class="text-xs text-ink-400">
+            {{ archive.episode_count }} {{ t('sharingEpisodes') }}
+          </span>
+          <KBadge v-for="fmt in parseFmts(archive.subtitle_format)" :key="fmt" variant="default" class="text-[10px] px-1.5 py-0.5">
+            {{ fmt }}
+          </KBadge>
+          <KBadge v-for="lang in parseLangs(archive.languages)" :key="lang" variant="sky" class="text-[10px] px-1.5 py-0.5">
+            {{ lang }}
+          </KBadge>
+          <KBadge v-if="archive.has_fonts" variant="success" class="text-[10px] px-1.5 py-0.5">
+            {{ t('sharingFont') }}
+          </KBadge>
         </div>
 
-        <!-- Anime cards -->
-        <div class="flex flex-col gap-4">
-          <div v-for="anime in animes" :key="anime.name_cn" class="card overflow-hidden">
-            <!-- Anime header -->
-            <div class="flex items-center gap-3 px-5 py-4 border-b border-sakura-100/60">
-              <div class="w-8 h-8 rounded-lg bg-sky-100 flex items-center justify-center shrink-0">
-                <Tv class="w-4 h-4 text-sky-500" />
-              </div>
-              <h3 class="font-display font-semibold text-ink-900 text-base flex-1 min-w-0 truncate">
-                {{ anime.name_cn }}
-              </h3>
-              <span class="text-xs text-ink-300 shrink-0">
-                {{ anime.totalSeasons }} {{ t('sharingSeasons') }} · {{ anime.totalArchives }} {{ t('sharingArchives') }}
-              </span>
-            </div>
+        <span class="text-xs text-ink-300 shrink-0 tabular-nums">
+          {{ formatSize(archive.file_size) }}
+        </span>
 
-            <!-- Seasons and archives -->
-            <div class="divide-y divide-sakura-50">
-              <div v-for="season in anime.seasons" :key="season.name">
-                <div class="px-5 pt-3 pb-1">
-                  <span class="text-xs font-semibold text-ink-400 uppercase tracking-wider">{{ season.name }}</span>
-                </div>
-
-                <div
-                  v-for="archive in season.archives"
-                  :key="archive.id"
-                  class="flex items-center gap-3 px-5 py-3 hover:bg-sakura-50/40 transition-colors duration-150 group"
-                >
-                  <KBadge variant="sakura" class="shrink-0 max-w-[120px] truncate">
-                    {{ archive.sub_group }}
-                  </KBadge>
-
-                  <div class="flex items-center gap-1.5 flex-1 min-w-0 flex-wrap">
-                    <span v-if="archive.episode_count" class="text-xs text-ink-400">
-                      {{ archive.episode_count }} {{ t('sharingEpisodes') }}
-                    </span>
-                    <KBadge v-for="fmt in parseFmts(archive.subtitle_format)" :key="fmt" variant="default" class="text-[10px] px-1.5 py-0.5">
-                      {{ fmt }}
-                    </KBadge>
-                    <KBadge v-for="lang in parseLangs(archive.languages)" :key="lang" variant="sky" class="text-[10px] px-1.5 py-0.5">
-                      {{ lang }}
-                    </KBadge>
-                    <KBadge v-if="archive.has_fonts" variant="success" class="text-[10px] px-1.5 py-0.5">
-                      {{ t('sharingFont') }}
-                    </KBadge>
-                  </div>
-
-                  <span class="text-xs text-ink-300 shrink-0 tabular-nums">
-                    {{ formatSize(archive.file_size) }}
-                  </span>
-
-                  <button
-                    @click="downloadArchive(archive)"
-                    class="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-ink-300 hover:text-sakura-500 hover:bg-sakura-100 opacity-0 group-hover:opacity-100 transition-all duration-200 active:scale-95"
-                    :title="t('download')"
-                  >
-                    <Download class="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <!-- Sub-entries -->
-            <div v-if="anime.sub_entries?.length" class="px-5 py-2.5 bg-sakura-50/30 border-t border-sakura-100/60">
-              <p class="text-[11px] text-ink-400 flex items-center gap-1.5">
-                <Paperclip class="w-3 h-3 shrink-0" />
-                {{ t('sharingIncludes') }}: {{ anime.sub_entries.join(' · ') }}
-              </p>
-            </div>
-          </div>
-        </div>
-      </template>
+        <button
+          @click="downloadArchive(archive)"
+          class="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-ink-300 hover:text-sakura-500 hover:bg-sakura-100 opacity-0 group-hover:opacity-100 transition-all duration-200 active:scale-95"
+          :title="t('download')"
+        >
+          <Download class="w-4 h-4" />
+        </button>
+      </div>
+      <KEmpty v-if="seasonArchives.length === 0" :title="t('sharingNoResults')" />
     </div>
 
     <!-- ═══ Search Mode: Flat results ═══ -->
@@ -657,163 +580,122 @@ onMounted(() => {
       </KButton>
     </section>
 
-    <!-- ═══ Upload Modal (Admin) ═══ -->
-    <Transition name="modal">
-      <div v-if="showUploadModal" class="fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="showUploadModal = false">
-        <div class="absolute inset-0 bg-ink-950/30 backdrop-blur-sm"></div>
-        <div class="card p-6 w-full max-w-lg max-h-[80vh] overflow-y-auto relative z-10 animate-scale-in">
-          <h2 class="font-display font-bold text-lg text-ink-900 mb-4">{{ t('sharingUploadTitle') }}</h2>
-
-          <!-- Form fields -->
-          <div class="flex flex-col gap-3">
-            <div>
-              <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingAnimeName') }} *</label>
-              <input v-model="uploadForm.name_cn" class="w-full px-3 py-2 rounded-lg border border-sakura-200 text-sm" />
-            </div>
-            <div class="flex gap-3">
-              <div class="w-20">
-                <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingLetter') }}</label>
-                <input v-model="uploadForm.letter" maxlength="1" class="w-full px-3 py-2 rounded-lg border border-sakura-200 text-sm uppercase" />
-              </div>
-              <div class="flex-1">
-                <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingSeason') }} *</label>
-                <select v-model="uploadForm.season" class="w-full px-3 py-2 rounded-lg border border-sakura-200 text-sm">
-                  <option v-for="s in ['S1','S2','S3','S4','Movie','SPs','OVA']" :key="s" :value="s">{{ s }}</option>
-                </select>
-              </div>
-            </div>
-            <div>
-              <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingSubGroup') }} *</label>
-              <input v-model="uploadForm.sub_group" class="w-full px-3 py-2 rounded-lg border border-sakura-200 text-sm" />
-            </div>
-            <div>
-              <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingLanguages') }} *</label>
-              <div class="flex flex-wrap gap-2">
-                <button
-                  v-for="lang in LANG_OPTIONS"
-                  :key="lang"
-                  @click="toggleLang(lang)"
-                  class="px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors"
-                  :class="uploadForm.languages.includes(lang)
-                    ? 'bg-sakura-100 border-sakura-300 text-sakura-700'
-                    : 'bg-white border-ink-200 text-ink-400 hover:border-sakura-200'"
-                >
-                  {{ lang }}
-                </button>
-              </div>
-            </div>
-            <label class="flex items-center gap-2 text-sm text-ink-600">
-              <input type="checkbox" v-model="uploadForm.has_fonts" class="rounded" />
-              {{ t('sharingHasFonts') }}
-            </label>
-
-            <!-- File drop zone -->
-            <div
-              @drop.prevent="handleDrop"
-              @dragover.prevent
-              class="border-2 border-dashed border-sakura-200 rounded-xl p-6 text-center cursor-pointer hover:border-sakura-300 transition-colors"
-              @click="($refs.fileInput as HTMLInputElement)?.click()"
-            >
-              <FileArchive class="w-8 h-8 text-ink-300 mx-auto mb-2" />
-              <p class="text-sm text-ink-500">{{ t('sharingDropZone') }}</p>
-              <p class="text-xs text-ink-300 mt-1">{{ t('sharingMaxSize') }}</p>
-              <p v-if="uploadFile" class="text-xs text-sakura-500 mt-2 font-medium">
-                {{ uploadFile.name }} ({{ uploadDetected }})
-              </p>
-              <input ref="fileInput" type="file" accept=".zip" class="hidden" @change="handleFileSelect($event)" />
-            </div>
-          </div>
-
-          <div class="flex justify-end gap-2 mt-4">
-            <KButton variant="ghost" @click="showUploadModal = false; resetForm()">{{ t('cancel') }}</KButton>
-            <KButton
-              variant="primary"
-              :disabled="!uploadForm.name_cn || !uploadForm.sub_group || !uploadForm.languages.length || !uploadFile || uploadSubmitting"
-              @click="submitUpload(false)"
-            >
-              <Upload class="w-4 h-4" />
-              {{ t('sharingPublish') }}
-            </KButton>
-          </div>
-        </div>
-      </div>
-    </Transition>
-
-    <!-- ═══ Contribute Modal (Public) ═══ -->
+    <!-- ═══ Contribute Modal (Improved) ═══ -->
     <Transition name="modal">
       <div v-if="showContributeModal" class="fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="showContributeModal = false">
         <div class="absolute inset-0 bg-ink-950/30 backdrop-blur-sm"></div>
-        <div class="card p-6 w-full max-w-lg max-h-[80vh] overflow-y-auto relative z-10 animate-scale-in">
-          <h2 class="font-display font-bold text-lg text-ink-900 mb-4">{{ t('sharingContributeFormTitle') }}</h2>
+        <div class="card p-0 w-full max-w-lg max-h-[85vh] overflow-y-auto relative z-10 animate-scale-in">
 
-          <div class="flex flex-col gap-3">
-            <div>
-              <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingAnimeName') }} *</label>
-              <input v-model="uploadForm.name_cn" class="w-full px-3 py-2 rounded-lg border border-sakura-200 text-sm" />
-            </div>
-            <div class="flex gap-3">
-              <div class="w-20">
-                <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingLetter') }}</label>
-                <input v-model="uploadForm.letter" maxlength="1" class="w-full px-3 py-2 rounded-lg border border-sakura-200 text-sm uppercase" />
+          <!-- Modal header -->
+          <div class="px-6 pt-6 pb-4 border-b border-sakura-100/60">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-xl bg-sakura-100 flex items-center justify-center shrink-0">
+                <Heart class="w-5 h-5 text-sakura-500" />
               </div>
-              <div class="flex-1">
-                <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingSeason') }} *</label>
-                <select v-model="uploadForm.season" class="w-full px-3 py-2 rounded-lg border border-sakura-200 text-sm">
-                  <option v-for="s in ['S1','S2','S3','S4','Movie','SPs','OVA']" :key="s" :value="s">{{ s }}</option>
-                </select>
+              <div>
+                <h2 class="font-display font-bold text-lg text-ink-900">{{ t('sharingContributeFormTitle') }}</h2>
+                <p class="text-xs text-ink-400 mt-0.5">{{ t('sharingContributeDesc') }}</p>
               </div>
             </div>
-            <div>
-              <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingSubGroup') }} *</label>
-              <input v-model="uploadForm.sub_group" class="w-full px-3 py-2 rounded-lg border border-sakura-200 text-sm" />
+          </div>
+
+          <div class="px-6 py-5 flex flex-col gap-5">
+            <!-- Step 1: Anime info -->
+            <div class="flex flex-col gap-3">
+              <div class="flex items-center gap-2 mb-1">
+                <div class="w-6 h-6 rounded-full bg-sakura-100 flex items-center justify-center text-xs font-bold text-sakura-500">1</div>
+                <span class="text-sm font-semibold text-ink-700">{{ t('sharingAnimeName') }}</span>
+              </div>
+              <input v-model="uploadForm.name_cn" class="w-full px-3 py-2.5 rounded-xl border border-sakura-200 text-sm focus:outline-none focus:ring-2 focus:ring-sakura-300/50" :placeholder="t('sharingAnimeName')" />
+              <div class="flex gap-3">
+                <div class="w-20">
+                  <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingLetter') }}</label>
+                  <input v-model="uploadForm.letter" maxlength="1" class="w-full px-3 py-2 rounded-xl border border-sakura-200 text-sm uppercase focus:outline-none focus:ring-2 focus:ring-sakura-300/50" />
+                </div>
+                <div class="flex-1">
+                  <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingSeason') }}</label>
+                  <select v-model="uploadForm.season" class="w-full px-3 py-2 rounded-xl border border-sakura-200 text-sm focus:outline-none focus:ring-2 focus:ring-sakura-300/50">
+                    <option v-for="s in ['S1','S2','S3','S4','Movie','SPs','OVA']" :key="s" :value="s">{{ s }}</option>
+                  </select>
+                </div>
+              </div>
             </div>
-            <div>
-              <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingLanguages') }} *</label>
+
+            <!-- Step 2: Sub group & languages -->
+            <div class="flex flex-col gap-3">
+              <div class="flex items-center gap-2 mb-1">
+                <div class="w-6 h-6 rounded-full bg-sky-100 flex items-center justify-center text-xs font-bold text-sky-500">2</div>
+                <span class="text-sm font-semibold text-ink-700">{{ t('sharingSubGroup') }} & {{ t('sharingLanguages') }}</span>
+              </div>
+              <input v-model="uploadForm.sub_group" class="w-full px-3 py-2.5 rounded-xl border border-sakura-200 text-sm focus:outline-none focus:ring-2 focus:ring-sakura-300/50" :placeholder="t('sharingSubGroup')" />
               <div class="flex flex-wrap gap-2">
                 <button
                   v-for="lang in LANG_OPTIONS"
                   :key="lang"
                   @click="toggleLang(lang)"
-                  class="px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors"
+                  class="px-3 py-1.5 rounded-xl text-xs font-medium border transition-all duration-150"
                   :class="uploadForm.languages.includes(lang)
-                    ? 'bg-sakura-100 border-sakura-300 text-sakura-700'
+                    ? 'bg-sakura-100 border-sakura-300 text-sakura-700 shadow-sm'
                     : 'bg-white border-ink-200 text-ink-400 hover:border-sakura-200'"
                 >
                   {{ lang }}
                 </button>
               </div>
-            </div>
-            <label class="flex items-center gap-2 text-sm text-ink-600">
-              <input type="checkbox" v-model="uploadForm.has_fonts" class="rounded" />
-              {{ t('sharingHasFonts') }}
-            </label>
-            <div>
-              <label class="text-xs font-medium text-ink-500 mb-1 block">{{ t('sharingContributor') }}</label>
-              <input v-model="uploadForm.contributor" class="w-full px-3 py-2 rounded-lg border border-sakura-200 text-sm" :placeholder="t('sharingContributorPlaceholder')" />
+              <label class="flex items-center gap-2 text-sm text-ink-600">
+                <input type="checkbox" v-model="uploadForm.has_fonts" class="rounded" />
+                {{ t('sharingHasFonts') }}
+              </label>
             </div>
 
-            <div
-              @drop.prevent="handleDrop"
-              @dragover.prevent
-              class="border-2 border-dashed border-sakura-200 rounded-xl p-6 text-center cursor-pointer hover:border-sakura-300 transition-colors"
-              @click="($refs.contribFileInput as HTMLInputElement)?.click()"
-            >
-              <FileArchive class="w-8 h-8 text-ink-300 mx-auto mb-2" />
-              <p class="text-sm text-ink-500">{{ t('sharingDropZone') }}</p>
-              <p class="text-xs text-ink-300 mt-1">{{ t('sharingMaxSize') }}</p>
-              <p v-if="uploadFile" class="text-xs text-sakura-500 mt-2 font-medium">
-                {{ uploadFile.name }} ({{ uploadDetected }})
-              </p>
-              <input ref="contribFileInput" type="file" accept=".zip" class="hidden" @change="handleFileSelect($event, true)" />
+            <!-- Step 3: Upload file -->
+            <div class="flex flex-col gap-3">
+              <div class="flex items-center gap-2 mb-1">
+                <div class="w-6 h-6 rounded-full bg-mint-100 flex items-center justify-center text-xs font-bold text-mint-500">3</div>
+                <span class="text-sm font-semibold text-ink-700">{{ t('sharingDropZone') }}</span>
+              </div>
+              <div>
+                <label class="text-xs font-medium text-ink-500 mb-1.5 block">{{ t('sharingContributor') }}</label>
+                <input v-model="uploadForm.contributor" class="w-full px-3 py-2 rounded-xl border border-sakura-200 text-sm focus:outline-none focus:ring-2 focus:ring-sakura-300/50" :placeholder="t('sharingContributorPlaceholder')" />
+              </div>
+              <div
+                @drop.prevent="handleDrop"
+                @dragover.prevent="dropHover = true"
+                @dragleave.prevent="dropHover = false"
+                @click="($refs.contribFileInput as HTMLInputElement)?.click()"
+                class="relative border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all duration-200"
+                :class="dropHover
+                  ? 'border-sakura-400 bg-sakura-50/60 scale-[1.01]'
+                  : uploadFile
+                    ? 'border-mint-300 bg-mint-50/30'
+                    : 'border-sakura-200 hover:border-sakura-300 hover:bg-sakura-50/30'"
+              >
+                <div v-if="!uploadFile" class="flex flex-col items-center gap-2">
+                  <div class="w-12 h-12 rounded-2xl bg-ink-100 flex items-center justify-center">
+                    <FileArchive class="w-6 h-6 text-ink-400" />
+                  </div>
+                  <p class="text-sm text-ink-500 font-medium">{{ t('sharingDropZone') }}</p>
+                  <p class="text-xs text-ink-300">{{ t('sharingMaxSize') }}</p>
+                </div>
+                <div v-else class="flex flex-col items-center gap-2">
+                  <div class="w-12 h-12 rounded-2xl bg-mint-100 flex items-center justify-center">
+                    <FileArchive class="w-6 h-6 text-mint-500" />
+                  </div>
+                  <p class="text-sm text-ink-700 font-semibold truncate max-w-full">{{ uploadFile.name }}</p>
+                  <KBadge variant="success">{{ uploadDetected }}</KBadge>
+                </div>
+                <input ref="contribFileInput" type="file" accept=".zip" class="hidden" @change="handleFileSelect($event)" />
+              </div>
             </div>
           </div>
 
-          <div class="flex justify-end gap-2 mt-4">
+          <!-- Modal footer -->
+          <div class="px-6 py-4 border-t border-sakura-100/60 flex justify-end gap-2">
             <KButton variant="ghost" @click="showContributeModal = false; resetForm()">{{ t('cancel') }}</KButton>
             <KButton
               variant="primary"
               :disabled="!uploadForm.name_cn || !uploadForm.sub_group || !uploadForm.languages.length || !uploadFile || uploadSubmitting"
-              @click="submitUpload(true)"
+              :loading="uploadSubmitting"
+              @click="submitContribute"
             >
               <Upload class="w-4 h-4" />
               {{ t('sharingSubmit') }}

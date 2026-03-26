@@ -240,4 +240,13 @@ export default {
   sharingIncludes: "Includes",
   sharingEpisodes: "ep",
   sharingFont: "fonts",
+  sharingBreadcrumbRoot: "Subtitle Sharing",
+  sharingLetterFolder: "{count} anime",
+  sharingAnimeFolder: "{count} seasons",
+  sharingSeasonFolder: "{count} archives",
+  sharingBack: "Back",
+  sharingFontsTab: "Sharing Mgmt",
+  sharingPendingReview: "Pending Contributions",
+  sharingNoPending: "No pending contributions",
+  sharingAdminUploadTitle: "Upload & Publish Archive",
 }

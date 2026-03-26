@@ -240,4 +240,13 @@ export default {
   sharingIncludes: "包含",
   sharingEpisodes: "集",
   sharingFont: "字体",
+  sharingBreadcrumbRoot: "子集化分享",
+  sharingLetterFolder: "{count} 部番剧",
+  sharingAnimeFolder: "{count} 季",
+  sharingSeasonFolder: "{count} 个字幕包",
+  sharingBack: "返回",
+  sharingFontsTab: "分享管理",
+  sharingPendingReview: "待审核贡献",
+  sharingNoPending: "暂无待审核内容",
+  sharingAdminUploadTitle: "上传并发布归档",
 }
