@@ -66,6 +66,12 @@ function getCachedArchives(): { data: SharedArchiveRow[]; etag: string } {
       "SELECT * FROM shared_archives WHERE status = 'published' ORDER BY letter, name_cn, season"
     )
     .all();
+  // Always build download_url from r2_key with proper URL encoding
+  for (const row of rows) {
+    if (row.r2_key) {
+      row.download_url = buildDownloadUrl(row.r2_key);
+    }
+  }
   const etag = createHash("sha256").update(JSON.stringify(rows)).digest("hex").slice(0, 16);
   _archivesCache = { data: rows, etag, ts: now };
   return { data: rows, etag };
@@ -246,16 +252,18 @@ sharing.get("/archives", (c) => {
 sharing.get("/archives/:id/download", (c) => {
   const db = getDb();
   const row = db
-    .prepare<{ download_url: string | null; status: string }, [string]>(
-      "SELECT download_url, status FROM shared_archives WHERE id = ?"
+    .prepare<{ r2_key: string | null; status: string }, [string]>(
+      "SELECT r2_key, status FROM shared_archives WHERE id = ?"
     )
     .get(c.req.param("id"));
 
-  if (!row || row.status !== "published" || !row.download_url) {
+  if (!row || row.status !== "published" || !row.r2_key) {
     return c.json({ error: "Not found" }, 404);
   }
 
-  return c.redirect(row.download_url, 302);
+  const url = buildDownloadUrl(row.r2_key);
+  if (!url) return c.json({ error: "R2 public URL not configured" }, 500);
+  return c.redirect(url, 302);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -295,7 +303,7 @@ sharing.post("/upload", async (c) => {
 
   const id = nanoid();
   const r2Key = `${meta.letter}/${meta.name_cn}/${meta.season}/${file.name}`;
-  const downloadUrl = config.r2PublicUrl ? `${config.r2PublicUrl}/${r2Key}` : null;
+  const downloadUrl = buildDownloadUrl(r2Key);
 
   // Upload to R2
   await r2Upload(r2Key, buf, "application/zip", buf.length);
@@ -353,7 +361,7 @@ sharing.post("/archives/:id/approve", async (c) => {
 
   const fileBuf = readFileSync(row.local_path);
   const r2Key = `${row.letter}/${row.name_cn}/${row.season}/${row.filename}`;
-  const downloadUrl = config.r2PublicUrl ? `${config.r2PublicUrl}/${r2Key}` : null;
+  const downloadUrl = buildDownloadUrl(r2Key);
 
   // Upload to R2
   await r2Upload(r2Key, fileBuf, "application/zip", fileBuf.length);
@@ -555,9 +563,38 @@ sharing.post("/import-index", (c) => {
 
       // Phase 2: Process each entry
       for (const entry of index.entries) {
-        for (const season of entry.seasons) {
+        // Build list of (basePath, season) pairs to fetch metadata from.
+        // Entries with sub_entries have seasons nested under sub_entry directories.
+        const metaPaths: Array<{ basePath: string; season: string }> = [];
+
+        if (entry.sub_entries?.length) {
+          // For entries with sub_entries, iterate each sub_entry dir and discover seasons
+          for (const subEntry of entry.sub_entries) {
+            const subMetaPath = `${entry.path}/${subEntry}`;
+            const encodedSubPath = subMetaPath.split("/").map(encodeURIComponent).join("/");
+            // Fetch the sub_entry's own metadata.json to find its seasons
+            const subMetaUrl = `https://raw.githubusercontent.com/Yuri-NagaSaki/AnimeSub/main/${encodedSubPath}/metadata.json`;
+            try {
+              const subMetaRes = await fetch(subMetaUrl);
+              if (subMetaRes.ok) {
+                const subMeta = (await subMetaRes.json()) as { seasons?: string[]; season?: string };
+                const seasons = subMeta.seasons ?? (subMeta.season ? [subMeta.season] : []);
+                for (const s of seasons) {
+                  metaPaths.push({ basePath: subMetaPath, season: s });
+                }
+              }
+            } catch { /* skip */ }
+          }
+        } else {
+          for (const season of entry.seasons) {
+            metaPaths.push({ basePath: entry.path, season });
+          }
+        }
+
+        for (const { basePath, season } of metaPaths) {
           try {
-            const metaUrl = `https://raw.githubusercontent.com/Yuri-NagaSaki/AnimeSub/main/${entry.path}/${season}/metadata.json`;
+            const encodedPath = basePath.split("/").map(encodeURIComponent).join("/");
+            const metaUrl = `https://raw.githubusercontent.com/Yuri-NagaSaki/AnimeSub/main/${encodedPath}/${season}/metadata.json`;
             const metaRes = await fetch(metaUrl);
             if (!metaRes.ok) {
               log("warn", `[sharing] metadata fetch failed: ${metaUrl} → ${metaRes.status}`);
@@ -583,12 +620,14 @@ sharing.post("/import-index", (c) => {
             };
 
             for (const archive of meta.archives) {
-              // Check if already imported
+              const r2Key = `${entry.letter}/${meta.name_cn}/${season}/${archive.filename}`;
+
+              // Check if already imported (by name+season+filename or r2_key)
               const existing = db
-                .prepare<{ id: string }, [string, string, string]>(
-                  "SELECT id FROM shared_archives WHERE name_cn = ? AND season = ? AND filename = ?"
+                .prepare<{ id: string }, [string, string, string, string]>(
+                  "SELECT id FROM shared_archives WHERE (name_cn = ? AND season = ? AND filename = ?) OR r2_key = ?"
                 )
-                .get(meta.name_cn, season, archive.filename);
+                .get(meta.name_cn, season, archive.filename, r2Key);
 
               if (existing) {
                 skipped++;
@@ -600,8 +639,8 @@ sharing.post("/import-index", (c) => {
               const match = archive.filename.match(/^\[([^\]]+)\]/);
               if (match) subGroup = match[1];
 
-              // Download zip and stream to R2
-              const zipUrl = `https://raw.githubusercontent.com/Yuri-NagaSaki/AnimeSub/main/${entry.path}/${season}/${encodeURIComponent(archive.filename)}`;
+              // Download zip and upload to R2
+              const zipUrl = `https://raw.githubusercontent.com/Yuri-NagaSaki/AnimeSub/main/${encodedPath}/${season}/${encodeURIComponent(archive.filename)}`;
               try {
                 const zipRes = await fetch(zipUrl);
                 if (!zipRes.ok) {
@@ -610,15 +649,14 @@ sharing.post("/import-index", (c) => {
                   continue;
                 }
 
-                const r2Key = `${entry.letter}/${meta.name_cn}/${season}/${archive.filename}`;
                 const zipBuf = Buffer.from(await zipRes.arrayBuffer());
                 await r2Upload(r2Key, zipBuf, "application/zip", zipBuf.length);
 
-                const downloadUrl = config.r2PublicUrl ? `${config.r2PublicUrl}/${r2Key}` : null;
+                const downloadUrl = buildDownloadUrl(r2Key);
                 const id = nanoid();
 
                 db.prepare(`
-                  INSERT INTO shared_archives (id, name_cn, letter, season, sub_group, languages, subtitle_format,
+                  INSERT OR IGNORE INTO shared_archives (id, name_cn, letter, season, sub_group, languages, subtitle_format,
                     episode_count, has_fonts, filename, r2_key, file_size, file_count, download_url, status, sub_entries)
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?)
                 `).run(
@@ -675,6 +713,17 @@ sharing.post("/import-index", (c) => {
 });
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
+
+/** Build a public download URL from an R2 key, encoding each path segment. */
+function buildDownloadUrl(r2Key: string): string | null {
+  if (!config.r2PublicUrl) return null;
+  // encodeURIComponent doesn't encode !'()* — R2 custom domains need them encoded
+  const encoded = r2Key
+    .split("/")
+    .map((s) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`))
+    .join("/");
+  return `${config.r2PublicUrl}/${encoded}`;
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
