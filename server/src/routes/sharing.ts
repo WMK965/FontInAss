@@ -620,7 +620,7 @@ sharing.post("/import-index", (c) => {
             };
 
             for (const archive of meta.archives) {
-              const r2Key = `${entry.letter}/${meta.name_cn}/${season}/${archive.filename}`;
+              const r2Key = `${basePath}/${season}/${archive.filename}`;
 
               // Check if already imported (by name+season+filename or r2_key)
               const existing = db
