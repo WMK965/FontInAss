@@ -198,6 +198,12 @@ export default {
   fontLibSize: "字体库",
   fontLibSets: "字体集",
   fontLibGrowing: "持续增加",
+  "about.tgGroupDesc": "字幕字体交流与技术支持",
+  "about.emailDesc": "商务合作或其他事宜",
+  "about.viewOnGitHub": "在 GitHub 上查看",
+  "about.anibtDesc": "新番 BT 发布共享平台",
+  "about.blogTitle": "猫猫博客",
+  "about.blogDesc": "技术分享与生活记录",
   // CLI page
   cli: "CLI",
   cliTitle: "FontInAss CLI",

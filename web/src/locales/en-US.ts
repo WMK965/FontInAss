@@ -198,6 +198,12 @@ export default {
   fontLibSize: "Library",
   fontLibSets: "Font Sets",
   fontLibGrowing: "Growing",
+  "about.tgGroupDesc": "Subtitle & font discussion and support",
+  "about.emailDesc": "Business inquiries or other matters",
+  "about.viewOnGitHub": "View on GitHub",
+  "about.anibtDesc": "Anime BT sharing platform",
+  "about.blogTitle": "CatCat Blog",
+  "about.blogDesc": "Tech sharing and life notes",
   // CLI page
   cli: "CLI",
   cliTitle: "FontInAss CLI",
