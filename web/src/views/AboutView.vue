@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
-import { Cherry, MessageCircle, Mail, Globe, Layers, BookOpen, ArrowUpRight, Send } from "lucide-vue-next";
+import { Cherry, MessageCircle, Mail, Globe, Layers, BookOpen, ArrowUpRight, Send, Github, AlertTriangle } from "lucide-vue-next";
 
 const { t } = useI18n();
 </script>
@@ -34,6 +34,11 @@ const { t } = useI18n();
           <h2 class="font-display font-semibold text-ink-900">{{ t('fontRequestTitle') }}</h2>
         </div>
         <p class="text-sm text-ink-500 leading-relaxed">{{ t('fontRequestDesc') }}</p>
+        <!-- Red warning notice -->
+        <div class="flex items-start gap-2.5 p-3 rounded-xl bg-red-50 border border-red-200/60">
+          <AlertTriangle class="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+          <p class="text-sm text-red-600 leading-relaxed font-medium">{{ t('fontRequestWarning') }}</p>
+        </div>
         <a
           href="https://t.me/catcat_chat_bot"
           target="_blank"
@@ -57,7 +62,7 @@ const { t } = useI18n();
         <ul class="flex flex-col gap-1">
           <li>
             <a
-              href="https://t.me/nagasaki_sc"
+              href="https://t.me/anibtass"
               target="_blank"
               rel="noopener"
               class="group flex items-center gap-3 p-3 rounded-xl hover:bg-ink-50 transition-colors duration-150"
@@ -66,8 +71,8 @@ const { t } = useI18n();
                 <svg class="w-4 h-4 text-sky-400" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
               </div>
               <div class="min-w-0 flex-1">
-                <p class="text-sm font-medium text-ink-800">{{ t('tgChannel') }}</p>
-                <p class="text-xs text-ink-400 font-mono truncate">@nagasaki_sc</p>
+                <p class="text-sm font-medium text-ink-800">{{ t('tgGroup') }}</p>
+                <p class="text-xs text-ink-400 font-mono truncate">@anibtass</p>
               </div>
               <ArrowUpRight class="w-3.5 h-3.5 text-ink-300 group-hover:text-ink-500 transition-colors shrink-0" />
             </a>
@@ -105,6 +110,27 @@ const { t } = useI18n();
             </a>
           </li>
         </ul>
+      </div>
+
+      <!-- ─── Open Source ────────────────────────────────────────────────── -->
+      <div class="card p-6 flex flex-col gap-4">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-xl bg-ink-100 flex items-center justify-center">
+            <Github class="w-4 h-4 text-ink-700" />
+          </div>
+          <h2 class="font-display font-semibold text-ink-900">{{ t('openSourceRepoTitle') }}</h2>
+        </div>
+        <p class="text-sm text-ink-500 leading-relaxed">{{ t('openSourceRepoDesc') }}</p>
+        <a
+          href="https://github.com/Yuri-NagaSaki/FontInAss"
+          target="_blank"
+          rel="noopener"
+          class="group inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-ink-800 hover:bg-ink-900 text-white text-sm font-medium transition-colors duration-150 w-fit"
+        >
+          <Github class="w-4 h-4" />
+          Yuri-NagaSaki/FontInAss
+          <ArrowUpRight class="w-3.5 h-3.5 opacity-70 group-hover:opacity-100 transition-opacity" />
+        </a>
       </div>
 
       <!-- ─── My Projects ───────────────────────────────────────────────── -->
@@ -178,17 +204,17 @@ const { t } = useI18n();
         <div class="flex items-center gap-4 pt-1">
           <div class="text-center">
             <p class="font-display font-bold text-2xl text-ink-900">~100 GB</p>
-            <p class="text-xs text-ink-400 mt-0.5">字体库</p>
+            <p class="text-xs text-ink-400 mt-0.5">{{ t('fontLibSize') }}</p>
           </div>
           <div class="w-px h-8 bg-ink-200" />
           <div class="text-center">
             <p class="font-display font-bold text-2xl text-ink-900">4</p>
-            <p class="text-xs text-ink-400 mt-0.5">字体集</p>
+            <p class="text-xs text-ink-400 mt-0.5">{{ t('fontLibSets') }}</p>
           </div>
           <div class="w-px h-8 bg-ink-200" />
           <div class="text-center">
             <p class="font-display font-bold text-2xl text-ink-900">∞</p>
-            <p class="text-xs text-ink-400 mt-0.5">持续增加</p>
+            <p class="text-xs text-ink-400 mt-0.5">{{ t('fontLibGrowing') }}</p>
           </div>
         </div>
       </div>
@@ -217,6 +243,8 @@ const { t } = useI18n();
     <p class="text-center text-xs text-ink-300 pb-4">
       FontInAss · Built with 🌸 by
       <a href="https://catcat.blog" target="_blank" rel="noopener" class="hover:text-sakura-400 transition-colors">catcat.blog</a>
+      ·
+      <a href="https://github.com/Yuri-NagaSaki/FontInAss" target="_blank" rel="noopener" class="hover:text-sakura-400 transition-colors">GPL-3.0</a>
     </p>
 
   </div>
