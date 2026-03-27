@@ -28,6 +28,7 @@ const navItems = [
   { path: "/",         labelKey: "home"     },
   { path: "/subset",   labelKey: "subset"   },
   { path: "/sharing",  labelKey: "sharing"  },
+  { path: "/cli",      labelKey: "cli"      },
   { path: "/comments", labelKey: "comments" },
   { path: "/about",    labelKey: "about"    },
 ];
@@ -104,6 +105,8 @@ const routeTitles: Record<string, string> = {
   "/": "FontInAss — 字幕字体子集化",
   "/subset": "字幕处理 · FontInAss",
   "/fonts": "字体管理 · FontInAss",
+  "/sharing": "字幕分享 · FontInAss",
+  "/cli": "CLI · FontInAss",
   "/about": "关于 · FontInAss",
   "/comments": "评论区 · FontInAss",
 };

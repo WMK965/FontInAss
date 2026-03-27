@@ -204,7 +204,7 @@ const { t } = useI18n();
         <p class="text-sm text-ink-500 leading-relaxed">{{ t('techStackDesc') }}</p>
         <div class="flex flex-wrap gap-2 pt-1">
           <span
-            v-for="tech in ['Cloudflare Workers','R2','D1','KV','Vue 3','Tailwind v4','Hono','TypeScript']"
+            v-for="tech in ['Bun','Hono','SQLite','opentype.js','Vue 3','Tailwind v4','TypeScript','Docker']"
             :key="tech"
             class="inline-flex items-center h-6 px-2.5 rounded-lg bg-ink-100 text-xs font-mono text-ink-600"
           >{{ tech }}</span>
