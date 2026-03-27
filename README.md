@@ -96,4 +96,4 @@ fontinass subset -r ./subs/
 
 ## 许可证
 
-[GPL-3.0](LICENSE)
+[AGPL-3.0](LICENSE)
