@@ -27,29 +27,12 @@ const archives = ref<SharedArchive[]>([]);
 
 // Search & filter
 const searchQuery = ref("");
-const filterLang = ref("");
-const filterGroup = ref("");
 const isSearching = computed(() => searchQuery.value.trim().length > 0);
 const searchResultIds = ref<Set<string>>(new Set());
 
 // Folder navigation: currentPath = [] → root, ['B'] → letter, ['B','BanG Dream!'] → anime, ['B','BanG Dream!','S1'] → season
 const currentPath = ref<string[]>([]);
 const navDepth = computed(() => currentPath.value.length);
-
-// Unique languages and sub groups for filter dropdowns
-const allLanguages = computed(() => {
-  const langs = new Set<string>();
-  for (const a of archives.value) {
-    try { for (const l of JSON.parse(a.languages)) langs.add(l); } catch {}
-  }
-  return [...langs].sort();
-});
-
-const allSubGroups = computed(() => {
-  const groups = new Set<string>();
-  for (const a of archives.value) groups.add(a.sub_group);
-  return [...groups].sort();
-});
 
 // Stats
 const stats = computed(() => {
@@ -74,14 +57,6 @@ interface AnimeGroup {
 
 const filteredArchives = computed(() => {
   let list = archives.value;
-  if (filterLang.value) {
-    list = list.filter((a) => {
-      try { return JSON.parse(a.languages).includes(filterLang.value); } catch { return false; }
-    });
-  }
-  if (filterGroup.value) {
-    list = list.filter((a) => a.sub_group === filterGroup.value);
-  }
   if (isSearching.value) {
     list = list.filter((a) => searchResultIds.value.has(a.id));
   }
@@ -364,36 +339,18 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Search + Filters -->
-      <div class="flex flex-col sm:flex-row gap-3">
-        <div class="relative flex-1">
-          <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-300" />
-          <input
-            v-model="searchQuery"
-            @input="onSearchDebounced"
-            class="w-full pl-10 pr-10 py-2.5 rounded-xl border border-sakura-200 bg-white text-sm text-ink-900 placeholder:text-ink-300 focus:outline-none focus:ring-2 focus:ring-sakura-300/50"
-            :placeholder="t('sharingSearchPlaceholder')"
-          />
-          <button v-if="searchQuery" @click="clearSearch" class="absolute right-3 top-1/2 -translate-y-1/2">
-            <X class="w-4 h-4 text-ink-300 hover:text-ink-500" />
-          </button>
-        </div>
-        <div class="flex gap-2">
-          <select
-            v-model="filterLang"
-            class="h-10 rounded-xl border border-sakura-200 bg-white px-3 text-sm text-ink-600"
-          >
-            <option value="">{{ t('sharingAllLanguages') }}</option>
-            <option v-for="lang in allLanguages" :key="lang" :value="lang">{{ lang }}</option>
-          </select>
-          <select
-            v-model="filterGroup"
-            class="h-10 rounded-xl border border-sakura-200 bg-white px-3 text-sm text-ink-600"
-          >
-            <option value="">{{ t('sharingAllGroups') }}</option>
-            <option v-for="group in allSubGroups" :key="group" :value="group">{{ group }}</option>
-          </select>
-        </div>
+      <!-- Search -->
+      <div class="relative">
+        <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-300" />
+        <input
+          v-model="searchQuery"
+          @input="onSearchDebounced"
+          class="w-full pl-10 pr-10 py-2.5 rounded-xl border border-sakura-200 bg-white text-sm text-ink-900 placeholder:text-ink-300 focus:outline-none focus:ring-2 focus:ring-sakura-300/50"
+          :placeholder="t('sharingSearchPlaceholder')"
+        />
+        <button v-if="searchQuery" @click="clearSearch" class="absolute right-3 top-1/2 -translate-y-1/2">
+          <X class="w-4 h-4 text-ink-300 hover:text-ink-500" />
+        </button>
       </div>
     </section>
 
@@ -512,45 +469,50 @@ onMounted(() => {
     <!-- ═══ Level 3: Archive Files ═══ -->
     <div
       v-if="!loading && archives.length > 0 && !isSearching && navDepth === 3 && !showContributeView"
-      class="flex flex-col gap-2"
+      class="flex flex-col gap-3"
     >
       <div
         v-for="archive in seasonArchives"
         :key="archive.id"
-        class="card px-5 py-3 flex items-center gap-3 hover:shadow-md transition-all duration-200 group"
+        class="card p-4 hover:shadow-md transition-all duration-200 group"
       >
-        <FileArchive class="w-5 h-5 text-ink-300 shrink-0" />
-
-        <KBadge variant="sakura" class="shrink-0 max-w-[120px] truncate">
-          {{ archive.sub_group }}
-        </KBadge>
-
-        <div class="flex items-center gap-1.5 flex-1 min-w-0 flex-wrap">
-          <span v-if="archive.episode_count" class="text-xs text-ink-400">
-            {{ archive.episode_count }} {{ t('sharingEpisodes') }}
-          </span>
-          <KBadge v-for="fmt in parseFmts(archive.subtitle_format)" :key="fmt" variant="default" class="text-[10px] px-1.5 py-0.5">
-            {{ fmt }}
-          </KBadge>
-          <KBadge v-for="lang in parseLangs(archive.languages)" :key="lang" variant="sky" class="text-[10px] px-1.5 py-0.5">
-            {{ lang }}
-          </KBadge>
-          <KBadge v-if="archive.has_fonts" variant="success" class="text-[10px] px-1.5 py-0.5">
-            {{ t('sharingFont') }}
-          </KBadge>
+        <div class="flex items-start gap-3">
+          <div class="w-10 h-10 rounded-xl bg-sakura-50 flex items-center justify-center shrink-0 mt-0.5">
+            <FileArchive class="w-5 h-5 text-sakura-400" />
+          </div>
+          <div class="flex-1 min-w-0">
+            <!-- Filename (prominent) -->
+            <p class="font-display font-semibold text-ink-900 text-sm leading-snug break-all">
+              {{ archive.filename }}
+            </p>
+            <!-- Metadata row -->
+            <div class="flex items-center gap-2 mt-2 flex-wrap">
+              <KBadge variant="sakura">{{ archive.sub_group }}</KBadge>
+              <span v-if="archive.episode_count" class="text-xs text-ink-400">
+                {{ archive.episode_count }} {{ t('sharingEpisodes') }}
+              </span>
+              <KBadge v-for="fmt in parseFmts(archive.subtitle_format)" :key="fmt" variant="default" class="text-[10px]">
+                {{ fmt }}
+              </KBadge>
+              <KBadge v-for="lang in parseLangs(archive.languages)" :key="lang" variant="sky" class="text-[10px]">
+                {{ lang }}
+              </KBadge>
+              <KBadge v-if="archive.has_fonts" variant="success" class="text-[10px]">
+                {{ t('sharingFont') }}
+              </KBadge>
+              <span class="text-xs text-ink-300 tabular-nums ml-auto">
+                {{ formatSize(archive.file_size) }}
+              </span>
+            </div>
+          </div>
+          <button
+            @click="downloadArchive(archive)"
+            class="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center text-sakura-400 hover:text-white hover:bg-sakura-500 transition-all duration-200 active:scale-95 mt-0.5"
+            :title="t('download')"
+          >
+            <Download class="w-4 h-4" />
+          </button>
         </div>
-
-        <span class="text-xs text-ink-300 shrink-0 tabular-nums">
-          {{ formatSize(archive.file_size) }}
-        </span>
-
-        <button
-          @click="downloadArchive(archive)"
-          class="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-ink-300 hover:text-sakura-500 hover:bg-sakura-100 opacity-0 group-hover:opacity-100 transition-all duration-200 active:scale-95"
-          :title="t('download')"
-        >
-          <Download class="w-4 h-4" />
-        </button>
       </div>
       <KEmpty v-if="seasonArchives.length === 0" :title="t('sharingNoResults')" />
     </div>
@@ -566,22 +528,26 @@ onMounted(() => {
         <div
           v-for="result in filteredArchives"
           :key="result.id"
-          class="card p-4 flex items-center gap-4 hover:shadow-md transition-shadow duration-200"
+          class="card p-4 hover:shadow-md transition-shadow duration-200"
         >
-          <div class="flex-1 min-w-0">
-            <p class="font-display font-medium text-sm text-ink-900 truncate">{{ result.name_cn }}</p>
-            <p class="text-xs text-ink-400 mt-0.5">
-              {{ result.season }} ·
-              <span class="text-sakura-400">{{ result.sub_group }}</span> ·
-              {{ result.episode_count }} {{ t('sharingEpisodes') }}
-            </p>
-          </div>
-          <div class="flex items-center gap-2 shrink-0">
-            <KBadge v-for="lang in parseLangs(result.languages)" :key="lang" variant="sky" class="text-[10px]">{{ lang }}</KBadge>
-            <span class="text-xs text-ink-300 tabular-nums">{{ formatSize(result.file_size) }}</span>
+          <div class="flex items-start gap-3">
+            <div class="w-10 h-10 rounded-xl bg-sky-50 flex items-center justify-center shrink-0 mt-0.5">
+              <FileArchive class="w-5 h-5 text-sky-400" />
+            </div>
+            <div class="flex-1 min-w-0">
+              <p class="font-display font-semibold text-sm text-ink-900 break-all leading-snug">{{ result.filename }}</p>
+              <p class="text-xs text-ink-400 mt-1">
+                {{ result.name_cn }} · {{ result.season }} ·
+                <span class="text-sakura-400">{{ result.sub_group }}</span>
+              </p>
+              <div class="flex items-center gap-2 mt-1.5 flex-wrap">
+                <KBadge v-for="lang in parseLangs(result.languages)" :key="lang" variant="sky" class="text-[10px]">{{ lang }}</KBadge>
+                <span class="text-xs text-ink-300 tabular-nums">{{ formatSize(result.file_size) }}</span>
+              </div>
+            </div>
             <button
               @click="downloadArchive(result)"
-              class="w-8 h-8 rounded-lg flex items-center justify-center text-sakura-400 hover:text-sakura-600 hover:bg-sakura-100 transition-colors duration-150 active:scale-95"
+              class="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center text-sakura-400 hover:text-white hover:bg-sakura-500 transition-all duration-200 active:scale-95 mt-0.5"
             >
               <Download class="w-4 h-4" />
             </button>
@@ -736,6 +702,40 @@ onMounted(() => {
                     class="w-full px-3.5 py-2.5 rounded-xl border border-ink-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sakura-300/50 focus:border-sakura-300 transition-all duration-150"
                     :placeholder="t('sharingContributorPlaceholder')"
                   />
+                </div>
+
+                <!-- Contribution Guidelines -->
+                <div class="mt-5 pt-5 border-t border-ink-100">
+                  <h4 class="text-xs font-bold text-ink-600 mb-2.5 flex items-center gap-1.5">
+                    <AlertCircle class="w-3.5 h-3.5 text-sakura-400" />
+                    {{ t('sharingGuidelinesTitle') }}
+                  </h4>
+                  <ul class="text-xs text-ink-400 space-y-1.5 leading-relaxed">
+                    <li class="flex items-start gap-1.5">
+                      <span class="text-sakura-300 shrink-0 mt-0.5">•</span>
+                      <span>{{ t('sharingGuidelineName') }}</span>
+                    </li>
+                    <li class="flex items-start gap-1.5">
+                      <span class="text-sakura-300 shrink-0 mt-0.5">•</span>
+                      <span>{{ t('sharingGuidelineLetter') }}</span>
+                    </li>
+                    <li class="flex items-start gap-1.5">
+                      <span class="text-sakura-300 shrink-0 mt-0.5">•</span>
+                      <span>{{ t('sharingGuidelineSeason') }}</span>
+                    </li>
+                    <li class="flex items-start gap-1.5">
+                      <span class="text-sakura-300 shrink-0 mt-0.5">•</span>
+                      <span>{{ t('sharingGuidelineSubGroup') }}</span>
+                    </li>
+                    <li class="flex items-start gap-1.5">
+                      <span class="text-sakura-300 shrink-0 mt-0.5">•</span>
+                      <span>{{ t('sharingGuidelineZip') }}</span>
+                    </li>
+                    <li class="flex items-start gap-1.5">
+                      <span class="text-sakura-300 shrink-0 mt-0.5">•</span>
+                      <span class="font-medium text-ink-500">{{ t('sharingGuidelineZipExample') }}</span>
+                    </li>
+                  </ul>
                 </div>
               </div>
             </div>
