@@ -825,7 +825,7 @@ onMounted(() => {
                     <input
                       v-model="uploadForm.name_cn"
                       @focus="showAutoComplete = true"
-                      @blur="setTimeout(() => showAutoComplete = false, 200)"
+                      @blur="window.setTimeout(() => showAutoComplete = false, 200)"
                       autocomplete="off"
                       class="w-full px-3.5 py-2.5 rounded-xl border border-ink-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sakura-300/50 focus:border-sakura-300 transition-all duration-150"
                       :placeholder="t('sharingAnimeNamePlaceholder')"
@@ -874,7 +874,7 @@ onMounted(() => {
                     <input
                       v-model="uploadForm.sub_group"
                       @focus="showSubGroupAC = true"
-                      @blur="setTimeout(() => showSubGroupAC = false, 200)"
+                      @blur="window.setTimeout(() => showSubGroupAC = false, 200)"
                       autocomplete="off"
                       class="w-full px-3.5 py-2.5 rounded-xl border border-ink-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sakura-300/50 focus:border-sakura-300 transition-all duration-150"
                       :placeholder="t('sharingSubGroupPlaceholder')"

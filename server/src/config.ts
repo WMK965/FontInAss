@@ -55,7 +55,7 @@ export const config: Config = {
   r2PublicUrl:        (process.env.R2_PUBLIC_URL ?? "").replace(/\/+$/, ""),
   // Sharing
   sharingMaxFileSize: parseInt(process.env.SHARING_MAX_FILE_SIZE ?? "209715200", 10),
-  sharingRateLimit:   parseInt(process.env.SHARING_RATE_LIMIT ?? "3", 10),
+  sharingRateLimit:   parseInt(process.env.SHARING_RATE_LIMIT ?? "50", 10),
   sharingCacheTtl:    parseInt(process.env.SHARING_CACHE_TTL ?? "300", 10),
   pendingDir:         resolve(process.env.PENDING_DIR ?? "./data/pending"),
   // Scheduler
