@@ -5,8 +5,7 @@
  * Validation layers (executed in order, fail-fast):
  *  1. File extension whitelist (.ttf, .otf, .ttc, .otc)
  *  2. Magic-byte / file-signature check
- *  3. File-size ceiling
- *  4. Structural parse via opentype.js (must yield ≥ 1 face)
+ *  3. Structural parse via opentype.js (must yield ≥ 1 face)
  */
 
 import * as opentype from "opentype.js";
@@ -44,11 +43,11 @@ export function validateMagicBytes(data: Uint8Array): ValidationResult {
  * Full validation pipeline.
  *
  * Returns `{ valid: true }` only if ALL checks pass.
+ * No file-size ceiling — local deployments have no memory constraints.
  */
 export function validateFontFile(
   filename: string,
   data: Uint8Array,
-  maxSize: number,
 ): ValidationResult {
   // 1. Extension
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
@@ -56,17 +55,11 @@ export function validateFontFile(
     return { valid: false, error: `Unsupported format: .${ext}` };
   }
 
-  // 2. File size
-  if (data.length > maxSize) {
-    const mb = (maxSize / 1024 / 1024).toFixed(0);
-    return { valid: false, error: `File exceeds ${mb} MB limit` };
-  }
-
-  // 3. Magic bytes
+  // 2. Magic bytes
   const magicResult = validateMagicBytes(data);
   if (!magicResult.valid) return magicResult;
 
-  // 4. Structural parse — the file must produce at least one valid font face.
+  // 3. Structural parse — the file must produce at least one valid font face.
   try {
     const buf = (data.byteOffset === 0 && data.byteLength === data.buffer.byteLength)
       ? data.buffer as ArrayBuffer

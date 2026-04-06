@@ -32,7 +32,6 @@ export interface Config {
   // Scheduler
   autoIndexIntervalHours: number;
   // Public upload
-  uploadMaxFileSize: number;
   uploadTargetDir: string;
 }
 
@@ -65,7 +64,6 @@ export const config: Config = {
   // Scheduler
   autoIndexIntervalHours: parseInt(process.env.AUTO_INDEX_INTERVAL_HOURS ?? "4", 10),
   // Public upload
-  uploadMaxFileSize: parseInt(process.env.UPLOAD_MAX_FILE_SIZE ?? String(30 * 1024 * 1024), 10),
   uploadTargetDir: (process.env.UPLOAD_TARGET_DIR ?? "CatCat-Fonts/").replace(/\/?$/, "/"),
 };
 

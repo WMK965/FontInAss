@@ -204,7 +204,7 @@ function handleDrop(e: DragEvent) {
   e.preventDefault();
   dropHover.value = false;
   const file = e.dataTransfer?.files[0];
-  if (file && file.name.endsWith(".zip")) {
+  if (file && /\.(zip|7z)$/i.test(file.name)) {
     uploadFile.value = file;
     uploadDetected.value = `${formatBytes(file.size)}`;
     uploadError.value = "";
@@ -833,7 +833,7 @@ onMounted(() => {
                       {{ t('sharingChangeFile') }}
                     </button>
                   </template>
-                  <input ref="contribFileInput" type="file" accept=".zip" class="hidden" @change="handleFileSelect($event)" />
+                  <input ref="contribFileInput" type="file" accept=".zip,.7z" class="hidden" @change="handleFileSelect($event)" />
                 </div>
               </div>
 

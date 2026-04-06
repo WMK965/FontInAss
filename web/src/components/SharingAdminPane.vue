@@ -84,7 +84,7 @@ function sharingHandleDrop(e: DragEvent) {
   e.preventDefault();
   sharingDropHover.value = false;
   const file = e.dataTransfer?.files[0];
-  if (file && file.name.endsWith(".zip")) {
+  if (file && /\.(zip|7z)$/i.test(file.name)) {
     sharingUploadFile.value = file;
     sharingUploadDetected.value = formatBytes(file.size);
   }
@@ -267,7 +267,7 @@ onMounted(() => {
           <span class="text-sm text-ink-700 font-medium truncate">{{ sharingUploadFile.name }}</span>
           <span class="text-xs text-ink-400">({{ sharingUploadDetected }})</span>
         </div>
-        <input ref="sharingFileInput" type="file" accept=".zip" class="hidden" @change="sharingHandleFileSelect($event)" />
+        <input ref="sharingFileInput" type="file" accept=".zip,.7z" class="hidden" @change="sharingHandleFileSelect($event)" />
       </div>
 
       <div class="flex items-center gap-2">

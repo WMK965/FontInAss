@@ -6,9 +6,9 @@
  * Strict validation ensures only genuine font files are accepted:
  *  1. Extension whitelist (.ttf/.otf/.ttc/.otc)
  *  2. Magic-byte signature check
- *  3. File size limit (default 30 MB)
- *  4. opentype.js structural parse
+ *  3. opentype.js structural parse
  *
+ * No file-size limit — local deployments have no memory constraints.
  * Accepted fonts are stored under UPLOAD_TARGET_DIR (default "CatCat-Fonts/")
  * inside FONT_DIR and indexed into SQLite.
  */
@@ -46,7 +46,7 @@ upload.post("/", async (c) => {
       const bytes = new Uint8Array(await fileEntry.arrayBuffer());
 
       // ── Multi-layer validation ──────────────────────────────────────────
-      const validation = validateFontFile(filename, bytes, config.uploadMaxFileSize);
+      const validation = validateFontFile(filename, bytes);
       if (!validation.valid) {
         log("warn", `[upload] rejected ${filename}: ${validation.error}`);
         results.push({ filename, id: "", faces: 0, error: validation.error });

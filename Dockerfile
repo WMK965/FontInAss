@@ -12,6 +12,9 @@ RUN bun run vite build
 # ─── Runtime stage ────────────────────────────────────────────────────────────
 FROM oven/bun:1 AS runtime
 
+# Install p7zip for 7z archive support (used by archive-utils.ts)
+RUN apt-get update -qq && apt-get install -y --no-install-recommends p7zip-full && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app/server
 
 # Install server dependencies

@@ -557,7 +557,7 @@ export async function downloadArchiveFile(id: string): Promise<{ blob: Blob; fil
   });
   if (!res.ok) throw new Error(await res.text());
   const cd = res.headers.get("content-disposition");
-  const filename = cd?.match(/filename="?(.+?)"?$/)?.[1] ?? "archive.zip";
+  const filename = cd?.match(/filename="?(.+?)"?$/)?.[1] ?? "archive";
   const blob = await res.blob();
   return { blob, filename };
 }

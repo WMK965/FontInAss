@@ -88,7 +88,7 @@ const processFile = async (entry: FileEntry) => {
 };
 
 const addFiles = async (fileList: FileList | File[]) => {
-  const supported = Array.from(fileList).filter(f => /\.(ass|ssa|srt)$/i.test(f.name));
+  const supported = Array.from(fileList).filter(f => /\.(ass|ssa)$/i.test(f.name));
   if (supported.length === 0) return;
   const entries: FileEntry[] = supported.map(f => reactive({
     key: `${Date.now()}_${f.name}`,
@@ -161,7 +161,7 @@ const onDrop = (e: DragEvent) => {
 
 const onClickUpload = () => {
   const input = document.createElement("input");
-  input.type = "file"; input.accept = ".ass,.ssa,.srt"; input.multiple = true;
+  input.type = "file"; input.accept = ".ass,.ssa"; input.multiple = true;
   input.onchange = (e) => { const fs = (e.target as HTMLInputElement).files; if (fs) addFiles(fs); };
   input.click();
 };

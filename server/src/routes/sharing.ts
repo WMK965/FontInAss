@@ -12,9 +12,16 @@
  */
 
 import { Hono } from "hono";
-import { config, log, checkApiKey } from "../config.js";
+import { config, log, requireApiKey } from "../config.js";
 import { getDb } from "../db.js";
 import { r2Upload, r2Delete, isR2Configured } from "../lib/r2-storage.js";
+import {
+  validateArchiveContents,
+  extractArchiveFilenames,
+  detectArchiveType,
+  archiveMimeType,
+  SUBTITLE_EXTENSIONS,
+} from "../lib/archive-utils.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, existsSync, unlinkSync, rmdirSync, readFileSync } from "node:fs";
 import { join, resolve, basename } from "node:path";
@@ -83,98 +90,6 @@ function nanoid(size = 21): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
   const bytes = crypto.getRandomValues(new Uint8Array(size));
   return Array.from(bytes, (b) => chars[b & 63]).join("");
-}
-
-// ─── Helper: validate zip file ────────────────────────────────────────────────
-
-const BLOCKED_EXTENSIONS = new Set([
-  ".exe", ".sh", ".bat", ".cmd", ".ps1", ".js", ".py",
-  ".dll", ".so", ".dylib", ".msi", ".com", ".scr",
-]);
-
-const SUBTITLE_EXTENSIONS = new Set([".ass", ".ssa", ".srt"]);
-
-async function validateZipContents(
-  buf: Buffer,
-): Promise<{ valid: boolean; error?: string; fileCount: number; episodeCount: number; subtitleFormats: string[] }> {
-  // Check zip magic bytes
-  if (buf.length < 4 || buf[0] !== 0x50 || buf[1] !== 0x4b || buf[2] !== 0x03 || buf[3] !== 0x04) {
-    return { valid: false, error: "Not a valid ZIP file", fileCount: 0, episodeCount: 0, subtitleFormats: [] };
-  }
-
-  // We do a simple scan of the zip central directory for filenames
-  // For a more robust approach we'd use jszip, but we keep deps minimal on server
-  const names = extractZipFilenames(buf);
-  if (names.length === 0) {
-    return { valid: false, error: "ZIP file appears empty", fileCount: 0, episodeCount: 0, subtitleFormats: [] };
-  }
-
-  let hasSubtitle = false;
-  const formats = new Set<string>();
-  let episodeCount = 0;
-
-  for (const name of names) {
-    // Path traversal check
-    if (name.includes("..")) {
-      return { valid: false, error: `Path traversal detected: ${name}`, fileCount: 0, episodeCount: 0, subtitleFormats: [] };
-    }
-
-    const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
-
-    // Block dangerous files
-    if (BLOCKED_EXTENSIONS.has(ext)) {
-      return { valid: false, error: `Blocked file type: ${ext} (${name})`, fileCount: 0, episodeCount: 0, subtitleFormats: [] };
-    }
-
-    if (SUBTITLE_EXTENSIONS.has(ext)) {
-      hasSubtitle = true;
-      formats.add(ext.slice(1)); // remove dot
-      episodeCount++;
-    }
-  }
-
-  if (!hasSubtitle) {
-    return { valid: false, error: "ZIP must contain at least one subtitle file (.ass/.ssa/.srt)", fileCount: 0, episodeCount: 0, subtitleFormats: [] };
-  }
-
-  return { valid: true, fileCount: names.length, episodeCount, subtitleFormats: [...formats] };
-}
-
-/** Extract filenames from a ZIP central directory (minimal parser). */
-function extractZipFilenames(buf: Buffer): string[] {
-  const names: string[] = [];
-  const MAX_UNCOMPRESSED = 500 * 1024 * 1024; // 500MB limit
-  // Find End of Central Directory record (last 65KB)
-  const searchStart = Math.max(0, buf.length - 65536);
-  let eocdOffset = -1;
-  for (let i = buf.length - 22; i >= searchStart; i--) {
-    if (buf[i] === 0x50 && buf[i + 1] === 0x4b && buf[i + 2] === 0x05 && buf[i + 3] === 0x06) {
-      eocdOffset = i;
-      break;
-    }
-  }
-  if (eocdOffset < 0) return names;
-
-  const cdOffset = buf.readUInt32LE(eocdOffset + 16);
-  const cdEntries = buf.readUInt16LE(eocdOffset + 10);
-  let pos = cdOffset;
-  let totalUncompressed = 0;
-
-  for (let i = 0; i < cdEntries && pos < buf.length - 46; i++) {
-    if (buf[pos] !== 0x50 || buf[pos + 1] !== 0x4b || buf[pos + 2] !== 0x01 || buf[pos + 3] !== 0x02) break;
-    const uncompressedSize = buf.readUInt32LE(pos + 24);
-    totalUncompressed += uncompressedSize;
-    if (totalUncompressed > MAX_UNCOMPRESSED) {
-      throw new Error("ZIP uncompressed size exceeds 500MB limit (possible zip bomb)");
-    }
-    const nameLen = buf.readUInt16LE(pos + 28);
-    const extraLen = buf.readUInt16LE(pos + 30);
-    const commentLen = buf.readUInt16LE(pos + 32);
-    const name = buf.subarray(pos + 46, pos + 46 + nameLen).toString("utf-8");
-    if (!name.endsWith("/")) names.push(name);
-    pos += 46 + nameLen + extraLen + commentLen;
-  }
-  return names;
 }
 
 // ─── Helper: expire old pending uploads ───────────────────────────────────────
@@ -268,8 +183,7 @@ sharing.get("/archives/:id/download", (c) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /** POST /upload — admin direct upload + publish. */
-sharing.post("/upload", async (c) => {
-  if (!checkApiKey(c)) return c.json({ error: "Unauthorized" }, 401);
+sharing.post("/upload", requireApiKey, async (c) => {
   if (!isR2Configured()) return c.json({ error: "R2 not configured" }, 500);
 
   const form = await c.req.formData();
@@ -300,15 +214,15 @@ sharing.post("/upload", async (c) => {
   }
 
   const buf = Buffer.from(await file.arrayBuffer());
-  const { valid, error, fileCount, episodeCount, subtitleFormats } = await validateZipContents(buf);
-  if (!valid) return c.json({ error: `Invalid zip: ${error}` }, 400);
+  const { valid, error, fileCount, episodeCount, subtitleFormats } = await validateArchiveContents(buf);
+  if (!valid) return c.json({ error: `Invalid archive: ${error}` }, 400);
 
   const id = nanoid();
   const r2Key = `${meta.letter}/${meta.name_cn}/${meta.season}/${file.name}`;
   const downloadUrl = buildDownloadUrl(r2Key);
 
   // Upload to R2
-  await r2Upload(r2Key, buf, "application/zip", buf.length);
+  await r2Upload(r2Key, buf, archiveMimeType(detectArchiveType(buf)), buf.length);
 
   // Insert into DB
   const db = getDb();
@@ -329,9 +243,7 @@ sharing.post("/upload", async (c) => {
 });
 
 /** GET /pending — list pending archives (admin only). */
-sharing.get("/pending", (c) => {
-  if (!checkApiKey(c)) return c.json({ error: "Unauthorized" }, 401);
-
+sharing.get("/pending", requireApiKey, (c) => {
   const db = getDb();
   const rows = db
     .prepare<SharedArchiveRow, []>(
@@ -343,8 +255,7 @@ sharing.get("/pending", (c) => {
 });
 
 /** POST /archives/:id/approve — approve a pending upload. */
-sharing.post("/archives/:id/approve", async (c) => {
-  if (!checkApiKey(c)) return c.json({ error: "Unauthorized" }, 401);
+sharing.post("/archives/:id/approve", requireApiKey, async (c) => {
   if (!isR2Configured()) return c.json({ error: "R2 not configured" }, 500);
 
   const db = getDb();
@@ -366,7 +277,7 @@ sharing.post("/archives/:id/approve", async (c) => {
   const downloadUrl = buildDownloadUrl(r2Key);
 
   // Upload to R2
-  await r2Upload(r2Key, fileBuf, "application/zip", fileBuf.length);
+  await r2Upload(r2Key, fileBuf, archiveMimeType(detectArchiveType(fileBuf)), fileBuf.length);
 
   // Update DB
   db.prepare(`
@@ -389,9 +300,7 @@ sharing.post("/archives/:id/approve", async (c) => {
 });
 
 /** POST /archives/:id/reject — reject a pending upload. */
-sharing.post("/archives/:id/reject", (c) => {
-  if (!checkApiKey(c)) return c.json({ error: "Unauthorized" }, 401);
-
+sharing.post("/archives/:id/reject", requireApiKey, (c) => {
   const db = getDb();
   const row = db
     .prepare<{ id: string; local_path: string | null }, [string]>(
@@ -421,9 +330,7 @@ sharing.post("/archives/:id/reject", (c) => {
 });
 
 /** DELETE /archives/:id — delete an archive (admin). */
-sharing.delete("/archives/:id", async (c) => {
-  if (!checkApiKey(c)) return c.json({ error: "Unauthorized" }, 401);
-
+sharing.delete("/archives/:id", requireApiKey, async (c) => {
   const db = getDb();
   const row = db
     .prepare<{ id: string; r2_key: string | null; local_path: string | null; status: string }, [string]>(
@@ -456,9 +363,7 @@ sharing.delete("/archives/:id", async (c) => {
 });
 
 /** PUT /archives/:id — edit archive metadata (admin). */
-sharing.put("/archives/:id", async (c) => {
-  if (!checkApiKey(c)) return c.json({ error: "Unauthorized" }, 401);
-
+sharing.put("/archives/:id", requireApiKey, async (c) => {
   const db = getDb();
   const id = c.req.param("id");
   const existing = db
@@ -508,9 +413,7 @@ sharing.put("/archives/:id", async (c) => {
 });
 
 /** GET /archives/:id/preview — list files inside the archive ZIP. */
-sharing.get("/archives/:id/preview", async (c) => {
-  if (!checkApiKey(c)) return c.json({ error: "Unauthorized" }, 401);
-
+sharing.get("/archives/:id/preview", requireApiKey, async (c) => {
   const db = getDb();
   const row = db
     .prepare<{ r2_key: string | null; local_path: string | null; status: string; filename: string }, [string]>(
@@ -545,7 +448,7 @@ sharing.get("/archives/:id/preview", async (c) => {
 
   if (!buf) return c.json({ error: "Archive file not accessible" }, 404);
 
-  const names = extractZipFilenames(buf);
+  const names = await extractArchiveFilenames(buf);
   const files = names.map(name => {
     const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
     return { name, ext, isSubtitle: SUBTITLE_EXTENSIONS.has(ext) };
@@ -560,9 +463,7 @@ sharing.get("/archives/:id/preview", async (c) => {
 });
 
 /** GET /archives/:id/download-file — download the archive file directly (admin). */
-sharing.get("/archives/:id/download-file", async (c) => {
-  if (!checkApiKey(c)) return c.json({ error: "Unauthorized" }, 401);
-
+sharing.get("/archives/:id/download-file", requireApiKey, async (c) => {
   const db = getDb();
   const row = db
     .prepare<{ r2_key: string | null; local_path: string | null; filename: string; status: string }, [string]>(
@@ -577,7 +478,7 @@ sharing.get("/archives/:id/download-file", async (c) => {
     const buf = readFileSync(row.local_path);
     return new Response(buf, {
       headers: {
-        "Content-Type": "application/zip",
+        "Content-Type": archiveMimeType(detectArchiveType(buf)),
         "Content-Disposition": `attachment; filename="${encodeURIComponent(row.filename)}"`,
         "Content-Length": String(buf.length),
       },
@@ -594,9 +495,7 @@ sharing.get("/archives/:id/download-file", async (c) => {
 });
 
 /** POST /upload-to-existing — upload to an existing anime/season directory (admin). */
-sharing.post("/upload-to-existing", async (c) => {
-  if (!checkApiKey(c)) return c.json({ error: "Unauthorized" }, 401);
-
+sharing.post("/upload-to-existing", requireApiKey, async (c) => {
   const form = await c.req.formData();
   const file = form.get("file") as File | null;
   const targetAnimeName = form.get("name_cn") as string | null;
@@ -618,15 +517,15 @@ sharing.post("/upload-to-existing", async (c) => {
   try { languages = JSON.parse(languagesStr); } catch { return c.json({ error: "Invalid languages format" }, 400); }
 
   const buf = Buffer.from(await file.arrayBuffer());
-  const { valid, error, fileCount, episodeCount, subtitleFormats } = await validateZipContents(buf);
-  if (!valid) return c.json({ error: `Invalid zip: ${error}` }, 400);
+  const { valid, error, fileCount, episodeCount, subtitleFormats } = await validateArchiveContents(buf);
+  if (!valid) return c.json({ error: `Invalid archive: ${error}` }, 400);
 
   const id = nanoid();
 
   if (isR2Configured()) {
     const r2Key = `${targetLetter}/${targetAnimeName}/${targetSeason}/${file.name}`;
     const downloadUrl = buildDownloadUrl(r2Key);
-    await r2Upload(r2Key, buf, "application/zip", buf.length);
+    await r2Upload(r2Key, buf, archiveMimeType(detectArchiveType(buf)), buf.length);
 
     const db = getDb();
     db.prepare(`
@@ -691,7 +590,7 @@ sharing.post("/contribute", async (c) => {
     return c.json({ error: `File too large (max ${Math.round(config.sharingMaxFileSize / 1024 / 1024)}MB)` }, 400);
   }
 
-  const meta = JSON.parse(metaStr) as {
+  let meta: {
     name_cn: string;
     letter: string;
     season: string;
@@ -700,14 +599,19 @@ sharing.post("/contribute", async (c) => {
     has_fonts: boolean;
     contributor?: string;
   };
+  try {
+    meta = JSON.parse(metaStr);
+  } catch {
+    return c.json({ error: "Invalid metadata JSON" }, 400);
+  }
 
   if (!meta.name_cn || !meta.letter || !meta.season || !meta.sub_group || !meta.languages?.length) {
     return c.json({ error: "Missing required metadata fields" }, 400);
   }
 
   const buf = Buffer.from(await file.arrayBuffer());
-  const { valid, error, fileCount, episodeCount, subtitleFormats } = await validateZipContents(buf);
-  if (!valid) return c.json({ error: `Invalid zip: ${error}` }, 400);
+  const { valid, error, fileCount, episodeCount, subtitleFormats } = await validateArchiveContents(buf);
+  if (!valid) return c.json({ error: `Invalid archive: ${error}` }, 400);
 
   // Save to local pending directory
   const id = nanoid();
@@ -738,8 +642,7 @@ sharing.post("/contribute", async (c) => {
 // Import from AnimeSub repo (SSE)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-sharing.post("/import-index", (c) => {
-  if (!checkApiKey(c)) return c.json({ error: "Unauthorized" }, 401);
+sharing.post("/import-index", requireApiKey, (c) => {
   if (!isR2Configured()) return c.json({ error: "R2 not configured" }, 500);
 
   return streamSSE(c, async (stream) => {
@@ -863,7 +766,7 @@ sharing.post("/import-index", (c) => {
                 }
 
                 const zipBuf = Buffer.from(await zipRes.arrayBuffer());
-                await r2Upload(r2Key, zipBuf, "application/zip", zipBuf.length);
+                await r2Upload(r2Key, zipBuf, archiveMimeType(detectArchiveType(zipBuf)), zipBuf.length);
 
                 const downloadUrl = buildDownloadUrl(r2Key);
                 const id = nanoid();

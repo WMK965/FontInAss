@@ -1,71 +1,138 @@
 <script setup lang="ts">
-import { ref, onMounted, onActivated, onUnmounted } from "vue";
+import { ref, onMounted, onActivated, onUnmounted, shallowRef } from "vue";
 import { useI18n } from "vue-i18n";
-import { init } from "@waline/client";
-import "@waline/client/waline.css";
 
 const { t, locale } = useI18n();
 
 const walineEl = ref<HTMLDivElement>();
 const isLoaded = ref(false);
-let walineController: ReturnType<typeof init> | null = null;
-let observer: MutationObserver | null = null;
-let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+const loadError = ref(false);
+let walineController: { update?: (opts: Record<string, unknown>) => void; destroy?: () => void } | null = null;
+const styleEl = shallowRef<HTMLStyleElement | null>(null);
 
 const WALINE_SERVER = import.meta.env.VITE_WALINE_SERVER ?? "https://waline.anibt.net/";
 
 function markLoaded() {
   if (isLoaded.value) return;
   isLoaded.value = true;
-  observer?.disconnect();
-  observer = null;
-  if (fallbackTimer) { clearTimeout(fallbackTimer); fallbackTimer = null; }
 }
 
-onMounted(() => {
+onMounted(async () => {
   if (!walineEl.value) return;
 
-  // Pre-warm: fire API request before Waline initializes so data is in browser cache
-  fetch(`${WALINE_SERVER}api/comment?path=${encodeURIComponent(location.pathname)}&pageSize=10&page=1&sortBy=insertedAt_desc`, {
-    mode: "cors",
-    credentials: "omit",
-  }).catch(() => {});
+  try {
+    // Lazy-load Waline JS + CSS only when this view mounts — zero main-bundle cost
+    const [walineModule] = await Promise.all([
+      import("@waline/client"),
+      import("@waline/client/waline.css"),
+    ]);
 
-  walineController = init({
-    el: walineEl.value,
-    serverURL: WALINE_SERVER,
-    lang: locale.value === "zh-CN" ? "zh-CN" : "en",
-    emoji: false,
-    meta: ["nick", "mail"],
-    requiredMeta: ["nick"],
-    pageSize: 10,
-    dark: "html.dark",
-    comment: true,
-    reaction: false,
-    avatarCDN: "https://cravatar.cn/avatar/",
-    avatar: "retro",
-    imageUploader: false,
-    search: false,
-  });
+    // Inject override CSS once
+    if (!document.getElementById("waline-overrides")) {
+      const style = document.createElement("style");
+      style.id = "waline-overrides";
+      style.textContent = WALINE_OVERRIDE_CSS;
+      document.head.appendChild(style);
+      styleEl.value = style;
+    }
 
-  observer = new MutationObserver(() => {
-    if (walineEl.value?.querySelector(".wl-editor-wrap, .wl-cards")) markLoaded();
-  });
-  observer.observe(walineEl.value, { childList: true, subtree: true });
+    walineController = walineModule.init({
+      el: walineEl.value,
+      serverURL: WALINE_SERVER,
+      lang: locale.value === "zh-CN" ? "zh-CN" : "en",
+      emoji: false,
+      meta: ["nick", "mail"],
+      requiredMeta: ["nick"],
+      pageSize: 10,
+      dark: "html.dark",
+      comment: true,
+      reaction: false,
+      avatar: "retro",
+      imageUploader: false,
+      search: false,
+    });
 
-  fallbackTimer = setTimeout(markLoaded, 3000);
+    // Detect first render
+    const observer = new MutationObserver(() => {
+      if (walineEl.value?.querySelector(".wl-editor-wrap, .wl-cards")) {
+        markLoaded();
+        observer.disconnect();
+      }
+    });
+    observer.observe(walineEl.value, { childList: true, subtree: true });
+    setTimeout(markLoaded, 4000);
+  } catch {
+    loadError.value = true;
+    markLoaded();
+  }
 });
 
-onActivated(() => {
-  walineController?.update?.({});
-});
+onActivated(() => { walineController?.update?.({}); });
 
 onUnmounted(() => {
-  observer?.disconnect();
-  if (fallbackTimer) clearTimeout(fallbackTimer);
   walineController?.destroy?.();
   walineController = null;
+  styleEl.value?.remove();
 });
+
+const WALINE_OVERRIDE_CSS = /* css */ `
+:root{--waline-font-size:.875rem;--waline-white:#fff;--waline-theme-color:oklch(68% .22 350);--waline-active-color:oklch(60% .24 350);--waline-color:oklch(25% .015 355);--waline-bg-color:var(--color-surface);--waline-bg-color-light:oklch(98% .008 355);--waline-bg-color-hover:oklch(97% .012 355);--waline-border-color:oklch(92% .015 355);--waline-disable-bg-color:oklch(96% .005 355);--waline-disable-color:oklch(60% .01 355);--waline-code-bg-color:oklch(22% .02 260);--waline-bq-color:oklch(92% .02 350);--waline-color-light:oklch(55% .01 355);--waline-info-bg-color:oklch(97% .008 355);--waline-info-color:oklch(55% .01 355);--waline-info-font-size:.625em;--waline-badge-color:oklch(68% .18 350);--waline-badge-font-size:.65em;--waline-avatar-size:2.25rem;--waline-m-avatar-size:1.75rem;--waline-avatar-radius:50%;--waline-border:1px solid var(--waline-border-color);--waline-border-radius:.75rem;--waline-box-shadow:none;--waline-dark-grey:oklch(45% .01 355);--waline-light-grey:oklch(60% .01 355);--waline-warning-color:oklch(55% .12 60);--waline-warning-bg-color:oklch(95% .04 75/.5)}
+.dark{--waline-white:oklch(18% .008 355);--waline-color:oklch(88% .008 355);--waline-bg-color:var(--color-surface);--waline-bg-color-light:oklch(22% .01 355);--waline-bg-color-hover:oklch(25% .012 355);--waline-border-color:oklch(28% .01 355);--waline-disable-bg-color:oklch(22% .005 355);--waline-disable-color:oklch(45% .01 355);--waline-code-bg-color:oklch(16% .015 260);--waline-bq-color:oklch(25% .01 355);--waline-color-light:oklch(55% .01 355);--waline-info-bg-color:oklch(22% .008 355);--waline-info-color:oklch(50% .01 355);--waline-badge-color:oklch(72% .16 350);--waline-dark-grey:oklch(60% .01 355);--waline-light-grey:oklch(48% .01 355);--waline-warning-color:oklch(70% .10 60);--waline-warning-bg-color:oklch(25% .04 75/.5)}
+[data-waline]{font-family:var(--font-body)!important}[data-waline] *{box-sizing:border-box!important}
+.waline-wrap .wl-panel{box-shadow:none!important;border:none!important;border-radius:0!important;padding:0!important;margin:0!important;background:transparent!important}
+.waline-wrap .wl-header{display:grid!important;grid-template-columns:repeat(auto-fit,minmax(140px,1fr))!important;gap:.5rem!important;padding:0!important;border:none!important;border-radius:0!important;margin-bottom:.75rem!important}
+.waline-wrap .wl-header-item{display:flex!important;align-items:center!important;padding:0!important;border:none!important;border-radius:.75rem!important;background:var(--waline-bg-color-light)!important;transition:background .15s,box-shadow .15s!important}
+.waline-wrap .wl-header-item:focus-within{background:var(--waline-bg-color)!important;box-shadow:0 0 0 2px oklch(68% .22 350/.2)!important}
+.waline-wrap .wl-header label{padding:.5rem 0 .5rem .75rem!important;font-size:.75rem!important;font-weight:500!important;color:var(--waline-color-light)!important;min-width:auto!important;white-space:nowrap!important}
+.waline-wrap .wl-header input{flex:1!important;padding:.5rem .75rem .5rem .35rem!important;font-size:.8125rem!important;border:none!important;background:transparent!important;color:var(--waline-color)!important;outline:none!important}
+.waline-wrap .wl-editor{min-height:7rem!important;margin:0!important;padding:.75rem 1rem!important;border-radius:.75rem!important;background:var(--waline-bg-color-light)!important;font-size:.8125rem!important;line-height:1.65!important;transition:background .15s,box-shadow .15s!important;width:100%!important}
+.waline-wrap .wl-editor:focus,.waline-wrap .wl-editor:focus-within{background:var(--waline-bg-color)!important;box-shadow:0 0 0 2px oklch(68% .22 350/.2)!important}
+.waline-wrap .wl-footer{margin:.75rem 0 0!important;padding:0!important;gap:.5rem!important}
+.waline-wrap .wl-action{width:1.75rem!important;height:1.75rem!important;border-radius:.5rem!important;font-size:.875rem!important;color:var(--waline-color-light)!important;transition:all .15s!important}
+.waline-wrap .wl-action:hover{color:var(--waline-theme-color)!important;background:oklch(68% .22 350/.08)!important}
+.waline-wrap .wl-btn{border-radius:.625rem!important;font-size:.75rem!important;font-weight:500!important;padding:.45rem 1rem!important;transition:all .2s var(--ease-out-quart)!important;letter-spacing:.01em!important}
+.waline-wrap .wl-btn.primary{border-color:oklch(65% .20 347)!important;background:linear-gradient(135deg,oklch(72% .175 347),oklch(63% .210 345))!important;color:#fff!important;box-shadow:0 1px 3px oklch(63% .21 345/.25)!important}
+.waline-wrap .wl-btn.primary:hover{border-color:oklch(60% .22 345)!important;background:linear-gradient(135deg,oklch(68% .19 347),oklch(58% .22 345))!important;box-shadow:0 2px 8px oklch(63% .21 345/.35)!important;transform:translateY(-1px)!important}
+.waline-wrap .wl-btn.primary:active{transform:translateY(0)!important;box-shadow:0 1px 2px oklch(63% .21 345/.2)!important}
+.waline-wrap .wl-count{font-size:.8125rem!important;font-weight:600!important;color:var(--waline-color)!important}
+.waline-wrap .wl-sort li{border-radius:.5rem!important;padding:.25rem .625rem!important;font-size:.75rem!important;transition:all .15s!important}
+.waline-wrap .wl-sort .active{background:oklch(68% .22 350/.1)!important;color:var(--waline-theme-color)!important}
+.waline-wrap .wl-cards{padding-top:.25rem!important}
+.waline-wrap .wl-cards>.wl-item{padding:1rem .75rem!important;border-radius:.75rem!important;transition:background .15s!important;margin:0!important}
+.waline-wrap .wl-cards>.wl-item:hover{background:var(--waline-bg-color-hover)!important}
+.waline-wrap .wl-cards>.wl-item+.wl-item{border-top:1px solid var(--waline-border-color)!important;border-radius:0!important}
+.waline-wrap .wl-cards>.wl-item:last-child{border-bottom-left-radius:.75rem!important;border-bottom-right-radius:.75rem!important}
+.waline-wrap .wl-cards>.wl-item:first-child{border-top-left-radius:.75rem!important;border-top-right-radius:.75rem!important}
+.waline-wrap .wl-avatar,.waline-wrap .wl-user .wl-avatar{border:none!important;box-shadow:0 0 0 2px oklch(92% .015 355),0 1px 3px oklch(0% 0 0/.06)!important}
+.dark .waline-wrap .wl-avatar,.dark .waline-wrap .wl-user .wl-avatar{box-shadow:0 0 0 2px oklch(28% .01 355),0 1px 3px oklch(0% 0 0/.2)!important}
+.waline-wrap .wl-user img{transition:transform .2s var(--ease-out-quart)!important}
+.waline-wrap .wl-user img:hover{transform:scale(1.1)!important}
+.waline-wrap .wl-nick{font-weight:600!important;font-size:.8125rem!important;color:var(--waline-color)!important}
+.waline-wrap .wl-badge{border-radius:.375rem!important;padding:.1em .4em!important;font-size:.625rem!important;font-weight:600!important;letter-spacing:.02em!important}
+.waline-wrap .wl-time{font-size:.6875rem!important;color:var(--waline-color-light)!important}
+.waline-wrap .wl-content{font-size:.8125rem!important;line-height:1.7!important;color:var(--waline-color)!important}
+.waline-wrap .wl-content p{margin:.35em 0!important}
+.waline-wrap .wl-card .wl-content .wl-reply-to{float:left!important;margin:0 .4em 0 0!important;line-height:2!important}
+.waline-wrap .wl-reply-to a{background:oklch(68% .22 350/.08)!important;padding:.1em .45em!important;border-radius:.375rem!important;font-size:.75rem!important;font-weight:500!important}
+.dark .waline-wrap .wl-reply-to a{background:oklch(68% .22 350/.15)!important}
+.waline-wrap .wl-comment-actions button{font-size:.6875rem!important;padding:.15rem .4rem!important;border-radius:.375rem!important;transition:all .15s!important;color:var(--waline-color-light)!important}
+.waline-wrap .wl-comment-actions button:hover{color:var(--waline-theme-color)!important;background:oklch(68% .22 350/.06)!important}
+.waline-wrap .wl-like.active{color:oklch(60% .20 15)!important}
+.waline-wrap .wl-quote{border-inline-start:2px solid var(--waline-border-color)!important;padding-inline-start:.75rem!important;margin:.5rem 0 0!important}
+.waline-wrap .wl-quote .wl-item{padding:.5rem 0!important}
+.waline-wrap .wl-comment .wl-panel{border-radius:.75rem!important;border:1px solid var(--waline-border-color)!important;background:var(--waline-bg-color-light)!important;padding:.75rem!important;margin:.75rem 0 0!important}
+.waline-wrap .wl-empty{padding:2.5rem 1rem!important;font-size:.8125rem!important;color:var(--waline-color-light)!important;text-align:center!important}
+.waline-wrap .wl-loading{padding:2rem 0!important}
+.waline-wrap .wl-loading svg circle{stroke:var(--waline-theme-color)!important}
+.waline-wrap .wl-power{font-size:.625rem!important;opacity:.35!important;margin-top:1.5rem!important;transition:opacity .2s!important}
+.waline-wrap .wl-power:hover{opacity:.65!important}
+.waline-wrap .wl-preview{border-top:1px dashed var(--waline-border-color)!important;margin:.5rem 0 0!important;padding:.75rem 0 0!important}
+.waline-wrap .wl-preview h4{font-size:.75rem!important;font-weight:600!important;color:var(--waline-color-light)!important;text-transform:uppercase!important;letter-spacing:.05em!important}
+.waline-wrap .wl-operation{padding:1rem 0 .5rem!important}
+.waline-wrap .wl-operation button{border-radius:.625rem!important;font-size:.75rem!important;font-weight:500!important;transition:all .2s var(--ease-out-quart)!important}
+[data-waline] blockquote{border-inline-start:3px solid oklch(68% .22 350/.3)!important;background:oklch(68% .22 350/.03)!important;border-radius:0 .5rem .5rem 0!important;padding:.5rem .75rem!important}
+[data-waline] code{border-radius:.375rem!important;font-size:.8em!important;padding:.15em .35em!important}
+`;
 </script>
 
 <template>
@@ -79,7 +146,19 @@ onUnmounted(() => {
     </div>
 
     <div class="relative min-h-[420px]">
+      <!-- Error state -->
+      <div v-if="loadError" class="rounded-2xl border border-ink-100 bg-surface p-8 text-center">
+        <p class="text-ink-400 text-sm">{{ t("commentsLoadError") }}</p>
+        <button
+          class="mt-3 text-sm text-sakura-500 hover:text-sakura-600 underline underline-offset-2"
+          @click="$router.go(0)"
+        >
+          {{ t("retry") }}
+        </button>
+      </div>
+
       <div
+        v-else
         ref="walineEl"
         class="waline-wrap rounded-2xl border border-ink-100 bg-surface shadow-[var(--shadow-sm)] overflow-hidden p-5 sm:p-6 transition-opacity duration-400"
         :class="isLoaded ? 'opacity-100' : 'opacity-0'"
@@ -128,426 +207,3 @@ onUnmounted(() => {
   </div>
 </template>
 
-<style>
-/* ══════════════════════════════════════════════════════════════════════
-   Waline Theme — Deep UI Overhaul
-   Transforms Waline's default look into something that matches our
-   Sakura × Digital design system with proper dark mode support.
-   ══════════════════════════════════════════════════════════════════════ */
-
-/* ── Theme Variables ─────────────────────────────────────────────── */
-:root {
-  --waline-font-size: 0.875rem;
-  --waline-white: #fff;
-  --waline-theme-color: oklch(68% 0.22 350);
-  --waline-active-color: oklch(60% 0.24 350);
-  --waline-color: oklch(25% 0.015 355);
-  --waline-bg-color: var(--color-surface);
-  --waline-bg-color-light: oklch(98% 0.008 355);
-  --waline-bg-color-hover: oklch(97% 0.012 355);
-  --waline-border-color: oklch(92% 0.015 355);
-  --waline-disable-bg-color: oklch(96% 0.005 355);
-  --waline-disable-color: oklch(60% 0.01 355);
-  --waline-code-bg-color: oklch(22% 0.02 260);
-  --waline-bq-color: oklch(92% 0.02 350);
-  --waline-color-light: oklch(55% 0.01 355);
-  --waline-info-bg-color: oklch(97% 0.008 355);
-  --waline-info-color: oklch(55% 0.01 355);
-  --waline-info-font-size: 0.625em;
-  --waline-badge-color: oklch(68% 0.18 350);
-  --waline-badge-font-size: 0.65em;
-  --waline-avatar-size: 2.25rem;
-  --waline-m-avatar-size: 1.75rem;
-  --waline-avatar-radius: 50%;
-  --waline-border: 1px solid var(--waline-border-color);
-  --waline-border-radius: 0.75rem;
-  --waline-box-shadow: none;
-  --waline-dark-grey: oklch(45% 0.01 355);
-  --waline-light-grey: oklch(60% 0.01 355);
-  --waline-warning-color: oklch(55% 0.12 60);
-  --waline-warning-bg-color: oklch(95% 0.04 75 / 0.5);
-}
-
-/* ── Dark mode variable overrides ───────────────────────────────── */
-.dark {
-  --waline-white: oklch(18% 0.008 355);
-  --waline-color: oklch(88% 0.008 355);
-  --waline-bg-color: var(--color-surface);
-  --waline-bg-color-light: oklch(22% 0.01 355);
-  --waline-bg-color-hover: oklch(25% 0.012 355);
-  --waline-border-color: oklch(28% 0.01 355);
-  --waline-disable-bg-color: oklch(22% 0.005 355);
-  --waline-disable-color: oklch(45% 0.01 355);
-  --waline-code-bg-color: oklch(16% 0.015 260);
-  --waline-bq-color: oklch(25% 0.01 355);
-  --waline-color-light: oklch(55% 0.01 355);
-  --waline-info-bg-color: oklch(22% 0.008 355);
-  --waline-info-color: oklch(50% 0.01 355);
-  --waline-badge-color: oklch(72% 0.16 350);
-  --waline-dark-grey: oklch(60% 0.01 355);
-  --waline-light-grey: oklch(48% 0.01 355);
-  --waline-warning-color: oklch(70% 0.10 60);
-  --waline-warning-bg-color: oklch(25% 0.04 75 / 0.5);
-}
-
-/* ── Global Waline overrides ─────────────────────────────────────── */
-[data-waline] {
-  font-family: var(--font-body) !important;
-}
-
-[data-waline] * {
-  box-sizing: border-box !important;
-}
-
-/* ── Panel (comment form) ─────────────────────────────────────────── */
-.waline-wrap .wl-panel {
-  box-shadow: none !important;
-  border: none !important;
-  border-radius: 0 !important;
-  padding: 0 !important;
-  margin: 0 !important;
-  background: transparent !important;
-}
-
-/* Meta input header — remove dashed border, clean grid layout */
-.waline-wrap .wl-header {
-  display: grid !important;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)) !important;
-  gap: 0.5rem !important;
-  padding: 0 !important;
-  border: none !important;
-  border-radius: 0 !important;
-  margin-bottom: 0.75rem !important;
-}
-
-.waline-wrap .wl-header-item {
-  display: flex !important;
-  align-items: center !important;
-  padding: 0 !important;
-  border: none !important;
-  border-radius: 0.75rem !important;
-  background: var(--waline-bg-color-light) !important;
-  transition: background 0.15s ease, box-shadow 0.15s ease !important;
-}
-
-.waline-wrap .wl-header-item:focus-within {
-  background: var(--waline-bg-color) !important;
-  box-shadow: 0 0 0 2px oklch(68% 0.22 350 / 0.2) !important;
-}
-
-.waline-wrap .wl-header label {
-  padding: 0.5rem 0 0.5rem 0.75rem !important;
-  font-size: 0.75rem !important;
-  font-weight: 500 !important;
-  color: var(--waline-color-light) !important;
-  min-width: auto !important;
-  white-space: nowrap !important;
-}
-
-.waline-wrap .wl-header input {
-  flex: 1 !important;
-  padding: 0.5rem 0.75rem 0.5rem 0.35rem !important;
-  font-size: 0.8125rem !important;
-  border: none !important;
-  background: transparent !important;
-  color: var(--waline-color) !important;
-  outline: none !important;
-}
-
-/* ── Editor textarea ──────────────────────────────────────────────── */
-.waline-wrap .wl-editor {
-  min-height: 7rem !important;
-  margin: 0 !important;
-  padding: 0.75rem 1rem !important;
-  border-radius: 0.75rem !important;
-  background: var(--waline-bg-color-light) !important;
-  font-size: 0.8125rem !important;
-  line-height: 1.65 !important;
-  transition: background 0.15s ease, box-shadow 0.15s ease !important;
-  width: 100% !important;
-  box-sizing: border-box !important;
-}
-
-.waline-wrap .wl-editor:focus,
-.waline-wrap .wl-editor:focus-within {
-  background: var(--waline-bg-color) !important;
-  box-shadow: 0 0 0 2px oklch(68% 0.22 350 / 0.2) !important;
-}
-
-/* ── Footer (toolbar + submit) ────────────────────────────────────── */
-.waline-wrap .wl-footer {
-  margin: 0.75rem 0 0 !important;
-  padding: 0 !important;
-  gap: 0.5rem !important;
-}
-
-/* Toolbar action icons */
-.waline-wrap .wl-action {
-  width: 1.75rem !important;
-  height: 1.75rem !important;
-  border-radius: 0.5rem !important;
-  font-size: 0.875rem !important;
-  color: var(--waline-color-light) !important;
-  transition: all 0.15s ease !important;
-}
-.waline-wrap .wl-action:hover {
-  color: var(--waline-theme-color) !important;
-  background: oklch(68% 0.22 350 / 0.08) !important;
-}
-
-/* ── Buttons ──────────────────────────────────────────────────────── */
-.waline-wrap .wl-btn {
-  border-radius: 0.625rem !important;
-  font-size: 0.75rem !important;
-  font-weight: 500 !important;
-  padding: 0.45rem 1rem !important;
-  transition: all 0.2s var(--ease-out-quart) !important;
-  letter-spacing: 0.01em !important;
-}
-
-.waline-wrap .wl-btn.primary {
-  border-color: oklch(65% 0.20 347) !important;
-  background: linear-gradient(135deg, oklch(72% 0.175 347), oklch(63% 0.210 345)) !important;
-  color: white !important;
-  box-shadow: 0 1px 3px oklch(63% 0.21 345 / 0.25) !important;
-}
-.waline-wrap .wl-btn.primary:hover {
-  border-color: oklch(60% 0.22 345) !important;
-  background: linear-gradient(135deg, oklch(68% 0.19 347), oklch(58% 0.22 345)) !important;
-  box-shadow: 0 2px 8px oklch(63% 0.21 345 / 0.35) !important;
-  transform: translateY(-1px) !important;
-}
-.waline-wrap .wl-btn.primary:active {
-  transform: translateY(0) !important;
-  box-shadow: 0 1px 2px oklch(63% 0.21 345 / 0.2) !important;
-}
-
-/* ── Comment count & sort tabs ────────────────────────────────────── */
-.waline-wrap .wl-count {
-  font-size: 0.8125rem !important;
-  font-weight: 600 !important;
-  color: var(--waline-color) !important;
-}
-
-.waline-wrap .wl-sort li {
-  border-radius: 0.5rem !important;
-  padding: 0.25rem 0.625rem !important;
-  font-size: 0.75rem !important;
-  transition: all 0.15s ease !important;
-}
-.waline-wrap .wl-sort .active {
-  background: oklch(68% 0.22 350 / 0.1) !important;
-  color: var(--waline-theme-color) !important;
-}
-
-/* ── Comment cards ────────────────────────────────────────────────── */
-.waline-wrap .wl-cards {
-  padding-top: 0.25rem !important;
-}
-
-.waline-wrap .wl-cards > .wl-item {
-  padding: 1rem 0.75rem !important;
-  border-radius: 0.75rem !important;
-  transition: background 0.15s ease !important;
-  margin: 0 !important;
-}
-.waline-wrap .wl-cards > .wl-item:hover {
-  background: var(--waline-bg-color-hover) !important;
-}
-
-/* Separator between top-level comments */
-.waline-wrap .wl-cards > .wl-item + .wl-item {
-  border-top: 1px solid var(--waline-border-color) !important;
-  border-radius: 0 !important;
-}
-.waline-wrap .wl-cards > .wl-item:last-child {
-  border-bottom-left-radius: 0.75rem !important;
-  border-bottom-right-radius: 0.75rem !important;
-}
-.waline-wrap .wl-cards > .wl-item:first-child {
-  border-top-left-radius: 0.75rem !important;
-  border-top-right-radius: 0.75rem !important;
-}
-
-/* ── Avatars ──────────────────────────────────────────────────────── */
-.waline-wrap .wl-avatar,
-.waline-wrap .wl-user .wl-avatar {
-  border: none !important;
-  box-shadow: 0 0 0 2px oklch(92% 0.015 355), 0 1px 3px oklch(0% 0 0 / 0.06) !important;
-}
-.dark .waline-wrap .wl-avatar,
-.dark .waline-wrap .wl-user .wl-avatar {
-  box-shadow: 0 0 0 2px oklch(28% 0.01 355), 0 1px 3px oklch(0% 0 0 / 0.2) !important;
-}
-
-.waline-wrap .wl-user img {
-  transition: transform 0.2s var(--ease-out-quart) !important;
-}
-.waline-wrap .wl-user img:hover {
-  transform: scale(1.1) !important;
-}
-
-/* ── Comment head (nick, badge, time) ─────────────────────────────── */
-.waline-wrap .wl-nick {
-  font-weight: 600 !important;
-  font-size: 0.8125rem !important;
-  color: var(--waline-color) !important;
-}
-
-.waline-wrap .wl-badge {
-  border-radius: 0.375rem !important;
-  padding: 0.1em 0.4em !important;
-  font-size: 0.625rem !important;
-  font-weight: 600 !important;
-  letter-spacing: 0.02em !important;
-}
-
-.waline-wrap .wl-time {
-  font-size: 0.6875rem !important;
-  color: var(--waline-color-light) !important;
-}
-
-/* ── Comment content ──────────────────────────────────────────────── */
-.waline-wrap .wl-content {
-  font-size: 0.8125rem !important;
-  line-height: 1.7 !important;
-  color: var(--waline-color) !important;
-}
-
-.waline-wrap .wl-content p {
-  margin: 0.35em 0 !important;
-}
-
-/* ── Reply @mention alignment ─────────────────────────────────────── */
-.waline-wrap .wl-card .wl-content .wl-reply-to {
-  float: left !important;
-  margin: 0 0.4em 0 0 !important;
-  line-height: 2 !important;
-}
-.waline-wrap .wl-card .wl-content .wl-reply-to + div > p:first-child,
-.waline-wrap .wl-card .wl-content .wl-reply-to + p:first-of-type {
-  margin-top: 0 !important;
-}
-
-/* Reply @tag pill style */
-.waline-wrap .wl-reply-to a {
-  background: oklch(68% 0.22 350 / 0.08) !important;
-  padding: 0.1em 0.45em !important;
-  border-radius: 0.375rem !important;
-  font-size: 0.75rem !important;
-  font-weight: 500 !important;
-}
-.dark .waline-wrap .wl-reply-to a {
-  background: oklch(68% 0.22 350 / 0.15) !important;
-}
-
-/* ── Comment action buttons (reply, like) ─────────────────────────── */
-.waline-wrap .wl-comment-actions button {
-  font-size: 0.6875rem !important;
-  padding: 0.15rem 0.4rem !important;
-  border-radius: 0.375rem !important;
-  transition: all 0.15s ease !important;
-  color: var(--waline-color-light) !important;
-}
-.waline-wrap .wl-comment-actions button:hover {
-  color: var(--waline-theme-color) !important;
-  background: oklch(68% 0.22 350 / 0.06) !important;
-}
-
-/* Like button active state */
-.waline-wrap .wl-like.active {
-  color: oklch(60% 0.20 15) !important;
-}
-
-/* ── Nested replies ───────────────────────────────────────────────── */
-.waline-wrap .wl-quote {
-  border-inline-start: 2px solid var(--waline-border-color) !important;
-  padding-inline-start: 0.75rem !important;
-  margin: 0.5rem 0 0 !important;
-}
-
-.waline-wrap .wl-quote .wl-item {
-  padding: 0.5rem 0 !important;
-}
-
-/* ── Inline reply editor ──────────────────────────────────────────── */
-.waline-wrap .wl-comment .wl-panel {
-  border-radius: 0.75rem !important;
-  border: 1px solid var(--waline-border-color) !important;
-  background: var(--waline-bg-color-light) !important;
-  padding: 0.75rem !important;
-  margin: 0.75rem 0 0 !important;
-}
-
-/* ── Empty state ──────────────────────────────────────────────────── */
-.waline-wrap .wl-empty {
-  padding: 2.5rem 1rem !important;
-  font-size: 0.8125rem !important;
-  color: var(--waline-color-light) !important;
-  text-align: center !important;
-}
-
-/* ── Loading spinner ──────────────────────────────────────────────── */
-.waline-wrap .wl-loading {
-  padding: 2rem 0 !important;
-}
-.waline-wrap .wl-loading svg circle {
-  stroke: var(--waline-theme-color) !important;
-}
-
-/* ── "Powered by Waline" ──────────────────────────────────────────── */
-.waline-wrap .wl-power {
-  font-size: 0.625rem !important;
-  opacity: 0.35 !important;
-  margin-top: 1.5rem !important;
-  transition: opacity 0.2s !important;
-}
-.waline-wrap .wl-power:hover {
-  opacity: 0.65 !important;
-}
-
-/* ── Preview area ─────────────────────────────────────────────────── */
-.waline-wrap .wl-preview {
-  border-top: 1px dashed var(--waline-border-color) !important;
-  margin: 0.5rem 0 0 !important;
-  padding: 0.75rem 0 0 !important;
-}
-.waline-wrap .wl-preview h4 {
-  font-size: 0.75rem !important;
-  font-weight: 600 !important;
-  color: var(--waline-color-light) !important;
-  text-transform: uppercase !important;
-  letter-spacing: 0.05em !important;
-}
-
-/* ── Pagination ───────────────────────────────────────────────────── */
-.waline-wrap .wl-operation {
-  padding: 1rem 0 0.5rem !important;
-}
-.waline-wrap .wl-operation button {
-  border-radius: 0.625rem !important;
-  font-size: 0.75rem !important;
-  font-weight: 500 !important;
-  transition: all 0.2s var(--ease-out-quart) !important;
-}
-
-/* ── Blockquote ───────────────────────────────────────────────────── */
-[data-waline] blockquote {
-  border-inline-start: 3px solid oklch(68% 0.22 350 / 0.3) !important;
-  background: oklch(68% 0.22 350 / 0.03) !important;
-  border-radius: 0 0.5rem 0.5rem 0 !important;
-  padding: 0.5rem 0.75rem !important;
-}
-
-/* ── Code blocks ──────────────────────────────────────────────────── */
-[data-waline] code {
-  border-radius: 0.375rem !important;
-  font-size: 0.8em !important;
-  padding: 0.15em 0.35em !important;
-}
-
-/* ── Smooth transitions for Waline status changes ─────────────────── */
-.waline-wrap .wl-comment-status {
-  transition: opacity 0.2s ease !important;
-}
-</style>

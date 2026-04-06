@@ -9,7 +9,7 @@
  */
 
 import { Hono } from "hono";
-import { config, log, checkApiKey } from "../config.js";
+import { config, log, requireApiKey } from "../config.js";
 import { getDb } from "../db.js";
 
 const logs = new Hono();
@@ -112,8 +112,7 @@ logs.get("/missing-fonts", (c) => {
 
 // ─── Mark font as resolved ────────────────────────────────────────────────────
 
-logs.post("/missing-fonts/resolve", async (c) => {
-  if (!checkApiKey(c)) return c.json({ error: "Unauthorized" }, 401);
+logs.post("/missing-fonts/resolve", requireApiKey, async (c) => {
   const body = await c.req.json<{ font_name: string }>().catch(() => null);
   if (!body?.font_name) return c.json({ error: "font_name required" }, 400);
 
@@ -129,8 +128,7 @@ logs.post("/missing-fonts/resolve", async (c) => {
 
 // ─── Unmark resolved font ─────────────────────────────────────────────────────
 
-logs.post("/missing-fonts/unresolve", async (c) => {
-  if (!checkApiKey(c)) return c.json({ error: "Unauthorized" }, 401);
+logs.post("/missing-fonts/unresolve", requireApiKey, async (c) => {
   const body = await c.req.json<{ font_name: string }>().catch(() => null);
   if (!body?.font_name) return c.json({ error: "font_name required" }, 400);
 

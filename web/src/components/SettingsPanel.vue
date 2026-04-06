@@ -72,28 +72,6 @@ const toggleItems = [
       </label>
     </div>
 
-    <!-- SRT fields -->
-    <div class="space-y-3 mb-4">
-      <div class="space-y-1">
-        <label class="text-xs font-medium text-ink-500">SRT Format</label>
-        <p class="text-[11px] text-ink-400">{{ t('srtFormatDesc') }}</p>
-        <input
-          v-model="settings.SRT_FORMAT"
-          class="w-full h-8 px-3 rounded-lg border border-ink-200 text-xs font-mono text-ink-700 focus:border-sakura-400 focus:ring-2 focus:ring-sakura-400/20 outline-none transition-all"
-          :placeholder="t('srtFormatPlaceholder')"
-        />
-      </div>
-      <div class="space-y-1">
-        <label class="text-xs font-medium text-ink-500">SRT Style</label>
-        <p class="text-[11px] text-ink-400">{{ t('srtStyleDesc') }}</p>
-        <input
-          v-model="settings.SRT_STYLE"
-          class="w-full h-8 px-3 rounded-lg border border-ink-200 text-xs font-mono text-ink-700 focus:border-sakura-400 focus:ring-2 focus:ring-sakura-400/20 outline-none transition-all"
-          :placeholder="t('srtStylePlaceholder')"
-        />
-      </div>
-    </div>
-
     <div class="flex gap-2">
       <KButton variant="primary" size="sm" class="flex-1" @click="saveSettings">
         <Transition name="chip-icon" mode="out-in">
