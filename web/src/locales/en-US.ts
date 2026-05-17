@@ -177,6 +177,9 @@ export default {
   save: "Save",
   fontNameModeAlias: "Compatibility alias",
   fontNameModeAliasDesc: "Off: preserve original names for SUP conversion and font lookup; on: use aliases for stable ASS/MKV embedded matching",
+  fontAliasSalt: "Alias salt",
+  fontAliasSaltDesc: "Use a different value per subtitle track, such as SC, TC, or JP, to avoid MKV embedded-font collisions",
+  fontAliasSaltPlaceholder: "e.g. TC",
   clearFontsDesc: "Remove existing [Fonts] section before processing",
   extractFontsDesc: "Extract embedded fonts into ZIP when downloading",
   // Home page

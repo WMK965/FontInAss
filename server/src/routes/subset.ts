@@ -34,6 +34,8 @@ subset.post("/", async (c) => {
   const fontsCheck = c.req.header("x-fonts-check") === "1";
   const clearFonts = c.req.header("x-clear-fonts") === "1";
   const fontNameMode = c.req.header("x-font-name-mode") === "preserve" ? "preserve" : "alias";
+  const fontAliasSaltB64 = c.req.header("x-font-alias-salt") ?? "";
+  const fontAliasSalt = normalizeAliasSalt(fontAliasSaltB64 ? atob(fontAliasSaltB64) : "");
   const srtFormatB64 = c.req.header("x-srt-format") ?? "";
   const srtStyleB64 = c.req.header("x-srt-style") ?? "";
   const srtFormat = srtFormatB64 ? atob(srtFormatB64) : "";
@@ -88,7 +90,7 @@ subset.post("/", async (c) => {
     const { name, bytes } = fileEntries[0];
     const clientIp = hashIp(c);
     try {
-      const result = await processSubtitle(name, bytes, { fontsCheck, clearFonts, fontNameMode, srtFormat, srtStyle });
+      const result = await processSubtitle(name, bytes, { fontsCheck, clearFonts, fontNameMode, fontAliasSalt, srtFormat, srtStyle });
       const elapsed = Date.now() - reqStart;
       log("info", `[subset] ${name} → code=${result.code} size=${result.data?.length ?? 0}B elapsed=${elapsed}ms`);
 
@@ -135,7 +137,7 @@ subset.post("/", async (c) => {
     const chunk = fileEntries.slice(i, i + BATCH_CONCURRENCY);
     const results = await Promise.allSettled(
       chunk.map(async ({ name, bytes }) =>
-        processSubtitle(name, bytes, { fontsCheck, clearFonts, fontNameMode, srtFormat, srtStyle })
+        processSubtitle(name, bytes, { fontsCheck, clearFonts, fontNameMode, fontAliasSalt, srtFormat, srtStyle })
       )
     );
     for (let j = 0; j < results.length; j++) {
@@ -176,6 +178,7 @@ interface ProcessOptions {
   fontsCheck: boolean;
   clearFonts: boolean;
   fontNameMode: "preserve" | "alias";
+  fontAliasSalt: string;
   srtFormat: string;
   srtStyle: string;
 }
@@ -186,11 +189,18 @@ interface ProcessResult {
   data: Uint8Array | null;
 }
 
-function makeSubsetAlias(originalName: string, used: Set<string>): string {
+function normalizeAliasSalt(salt: string): string {
+  return salt.trim().slice(0, 80);
+}
+
+function makeSubsetAlias(originalName: string, used: Set<string>, aliasSalt = ""): string {
   let salt = 0;
+  const normalizedAliasSalt = normalizeAliasSalt(aliasSalt);
   while (true) {
     const hash = createHash("sha1")
       .update(originalName)
+      .update("\0")
+      .update(normalizedAliasSalt)
       .update("\0")
       .update(String(salt))
       .digest("hex")
@@ -219,6 +229,7 @@ async function processSubtitle(
       fontsCheck: opts.fontsCheck,
       clearFonts: opts.clearFonts,
       fontNameMode: opts.fontNameMode,
+      fontAliasSalt: opts.fontAliasSalt,
       srtFormat: opts.srtFormat,
       srtStyle: opts.srtStyle,
     });
@@ -306,7 +317,7 @@ async function processSubtitle(
   for (const [key] of fontEntries) {
     const [nameLower] = key.split("|");
     if (!subsetAliasByNameLower.has(nameLower)) {
-      subsetAliasByNameLower.set(nameLower, makeSubsetAlias(displayName(nameLower), usedSubsetAliases));
+      subsetAliasByNameLower.set(nameLower, makeSubsetAlias(displayName(nameLower), usedSubsetAliases, opts.fontAliasSalt));
     }
   }
 

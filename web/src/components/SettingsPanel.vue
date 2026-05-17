@@ -14,7 +14,7 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
-const { settings, save, toggle, get, setFontNameMode } = useSettings();
+const { settings, save, toggle, get, setFontNameMode, setFontAliasSalt } = useSettings();
 
 const savedAck = shallowRef(false);
 
@@ -27,6 +27,10 @@ const saveSettings = () => {
 const isAliasFontNameMode = computed(() => settings.FONT_NAME_MODE === "alias");
 const toggleFontNameMode = () => {
   setFontNameMode(isAliasFontNameMode.value ? "preserve" : "alias");
+};
+
+const onAliasSaltInput = (event: Event) => {
+  setFontAliasSalt((event.target as HTMLInputElement).value);
 };
 
 const switchItems = [
@@ -107,6 +111,19 @@ const switchItems = [
         </div>
       </label>
     </div>
+
+    <label class="block mb-5">
+      <span class="block text-xs font-medium text-ink-700 leading-snug">{{ t('fontAliasSalt') }}</span>
+      <span class="block text-[11px] text-ink-400 leading-snug mt-0.5">{{ t('fontAliasSaltDesc') }}</span>
+      <input
+        class="mt-2 w-full h-9 rounded-lg border border-ink-200 bg-white px-3 text-xs text-ink-700 outline-none transition focus:border-sakura-300 focus:ring-2 focus:ring-sakura-100 disabled:bg-ink-50 disabled:text-ink-300"
+        :value="settings.FONT_ALIAS_SALT"
+        :placeholder="t('fontAliasSaltPlaceholder')"
+        :disabled="!isAliasFontNameMode"
+        maxlength="80"
+        @input="onAliasSaltInput"
+      >
+    </label>
 
     <div class="flex gap-2">
       <KButton variant="primary" size="sm" class="flex-1" @click="saveSettings">

@@ -54,6 +54,10 @@ enum Commands {
         /// Remove existing embedded fonts before processing
         #[arg(long)]
         clean: bool,
+
+        /// Extra salt for generated alias names (use different values per MKV subtitle track)
+        #[arg(long)]
+        alias_salt: Option<String>,
     },
 
     /// Manage CLI configuration
@@ -160,6 +164,7 @@ async fn run_subset(
     api_key_override: Option<String>,
     strict: bool,
     clean: bool,
+    alias_salt: Option<String>,
 ) -> Result<()> {
     let dim = Style::new().dim();
     let bold = Style::new().bold();
@@ -197,6 +202,7 @@ async fn run_subset(
     let opts = SubsetOpts {
         strict,
         clean,
+        alias_salt: alias_salt.unwrap_or_default().trim().chars().take(80).collect(),
         api_key,
     };
 
@@ -324,7 +330,8 @@ async fn main() {
             api_key,
             strict,
             clean,
-        } => run_subset(files, recursive, output, server, api_key, strict, clean).await,
+            alias_salt,
+        } => run_subset(files, recursive, output, server, api_key, strict, clean, alias_salt).await,
         Commands::Config { action } => run_config(action),
     };
 

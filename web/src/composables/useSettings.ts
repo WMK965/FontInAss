@@ -12,6 +12,7 @@ export interface Settings {
   EXTRACT_FONTS: boolean;
   CLEAR_AFTER_DOWNLOAD: boolean;
   FONT_NAME_MODE: FontNameMode;
+  FONT_ALIAS_SALT: string;
 }
 
 const defaults: Settings = {
@@ -22,6 +23,7 @@ const defaults: Settings = {
   EXTRACT_FONTS: false,
   CLEAR_AFTER_DOWNLOAD: true,
   FONT_NAME_MODE: "preserve",
+  FONT_ALIAS_SALT: "",
 };
 
 // Load once at module init
@@ -38,6 +40,9 @@ const settings = reactive<Settings>({ ...defaults, ...loaded });
 if (settings.FONT_NAME_MODE !== "preserve" && settings.FONT_NAME_MODE !== "alias") {
   settings.FONT_NAME_MODE = defaults.FONT_NAME_MODE;
 }
+if (typeof settings.FONT_ALIAS_SALT !== "string") {
+  settings.FONT_ALIAS_SALT = defaults.FONT_ALIAS_SALT;
+}
 
 export function useSettings() {
   const save = () => {
@@ -52,8 +57,12 @@ export function useSettings() {
     settings.FONT_NAME_MODE = mode;
   };
 
+  const setFontAliasSalt = (salt: string) => {
+    settings.FONT_ALIAS_SALT = salt.trim().slice(0, 80);
+  };
+
   const get = (key: string): boolean =>
     Boolean(settings[key as keyof Settings]);
 
-  return { settings, save, toggle, get, setFontNameMode };
+  return { settings, save, toggle, get, setFontNameMode, setFontAliasSalt };
 }

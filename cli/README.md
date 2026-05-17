@@ -44,6 +44,10 @@ fontinass subset --clean file.ass
 
 # Strict mode: fail if any font is missing
 fontinass subset --strict file.ass
+
+# Multi-track MKV: use different alias salts for different subtitle tracks
+fontinass subset --alias-salt SC simple-jp.ass
+fontinass subset --alias-salt TC traditional-jp.ass
 ```
 
 ## Commands
@@ -65,6 +69,7 @@ Options:
       --api-key <KEY>      API key (overrides config)
       --strict             Fail if any font is missing
       --clean              Remove existing embedded fonts before processing
+      --alias-salt <TEXT>  Extra salt for generated alias names
 ```
 
 **Supported formats:** `.ass`, `.ssa`, `.srt`

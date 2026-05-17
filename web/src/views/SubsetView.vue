@@ -72,6 +72,7 @@ const processFile = async (entry: FileEntry) => {
       fontsCheck: settings.STRICT_MODE,
       clearFonts: settings.CLEAR_FONTS,
       fontNameMode: settings.FONT_NAME_MODE,
+      fontAliasSalt: settings.FONT_ALIAS_SALT,
       srtFormat: settings.SRT_FORMAT,
       srtStyle: settings.SRT_STYLE,
       signal: processingAbort?.signal,

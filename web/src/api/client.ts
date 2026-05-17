@@ -96,6 +96,7 @@ export interface SubsetOptions {
   fontsCheck?: boolean;
   clearFonts?: boolean;
   fontNameMode?: "preserve" | "alias";
+  fontAliasSalt?: string;
   srtFormat?: string;
   srtStyle?: string;
   signal?: AbortSignal;
@@ -309,6 +310,7 @@ export async function subsetFile(file: File, opts: SubsetOptions = {}): Promise<
     "X-Clear-Fonts": opts.clearFonts ? "1" : "0",
   };
   if (opts.fontNameMode) headers["X-Font-Name-Mode"] = opts.fontNameMode;
+  if (opts.fontAliasSalt) headers["X-Font-Alias-Salt"] = base64Encode(opts.fontAliasSalt);
   if (opts.srtFormat) headers["X-Srt-Format"] = base64Encode(opts.srtFormat);
   if (opts.srtStyle) headers["X-Srt-Style"] = base64Encode(opts.srtStyle);
 

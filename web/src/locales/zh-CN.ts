@@ -177,6 +177,9 @@ export default {
   save: "保存",
   fontNameModeAlias: "兼容别名",
   fontNameModeAliasDesc: "关闭：保留原名，适合转 SUP、人工反查字体；开启：兼容别名，适合 ASS/MKV 嵌入匹配稳定性",
+  fontAliasSalt: "别名盐",
+  fontAliasSaltDesc: "同一部片的不同字幕轨填不同值，例如 SC、TC、JP，避免 MKV 内封字体冲突",
+  fontAliasSaltPlaceholder: "例如 TC",
   clearFontsDesc: "处理前移除字幕中已有的 [Fonts] 节",
   extractFontsDesc: "下载时将内嵌字体单独提取到 ZIP",
   // Home page

@@ -78,6 +78,10 @@ fontinass subset *.ass
 
 # 递归处理目录
 fontinass subset -r ./subs/
+
+# 多字幕轨内封时，为不同轨道使用不同别名盐，避免 MKV 字体冲突
+fontinass subset --alias-salt SC simple-jp.ass
+fontinass subset --alias-salt TC traditional-jp.ass
 ```
 
 详细文档见 [cli/README.md](cli/README.md)。

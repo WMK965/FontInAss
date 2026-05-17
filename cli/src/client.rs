@@ -18,6 +18,7 @@ pub struct SubsetResult {
 pub struct SubsetOpts {
     pub strict: bool,
     pub clean: bool,
+    pub alias_salt: String,
     pub api_key: String,
 }
 
@@ -81,6 +82,9 @@ pub async fn subset_single(
         .header("X-Filename", b64_encode(&filename))
         .header("X-Fonts-Check", if opts.strict { "1" } else { "0" })
         .header("X-Clear-Fonts", if opts.clean { "1" } else { "0" });
+    if !opts.alias_salt.is_empty() {
+        req = req.header("X-Font-Alias-Salt", b64_encode(&opts.alias_salt));
+    }
 
     if !opts.api_key.is_empty() {
         req = req.header("X-API-Key", &opts.api_key);
@@ -146,8 +150,11 @@ pub async fn subset_batch(
     let mut req = client
         .post(format!("{}/api/subset", server.trim_end_matches('/')))
         .header("X-Fonts-Check", if opts.strict { "1" } else { "0" })
-        .header("X-Clear-Fonts", if opts.clean { "1" } else { "0" })
-        .multipart(form);
+        .header("X-Clear-Fonts", if opts.clean { "1" } else { "0" });
+    if !opts.alias_salt.is_empty() {
+        req = req.header("X-Font-Alias-Salt", b64_encode(&opts.alias_salt));
+    }
+    req = req.multipart(form);
 
     if !opts.api_key.is_empty() {
         req = req.header("X-API-Key", &opts.api_key);
