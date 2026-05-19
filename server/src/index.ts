@@ -45,7 +45,7 @@ app.use("*", async (c, next) => {
     origin: config.corsOrigin,
     allowHeaders: ["*"],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    exposeHeaders: ["X-Code", "X-Message"],
+    exposeHeaders: ["X-Code", "X-Message", "Content-Disposition"],
   })(c, next);
 });
 

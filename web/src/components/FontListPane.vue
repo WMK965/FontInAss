@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted, onBeforeUnmount } from "vue";
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { useI18n } from "vue-i18n";
-import { Trash2, RefreshCcw, Search, CheckCircle2, Loader2 } from "lucide-vue-next";
-import { listFonts, deleteFont, deleteFontsBatch } from "../api/client";
+import { Trash2, RefreshCcw, Search, CheckCircle2, Loader2, Download } from "lucide-vue-next";
+import { listFonts, deleteFont, deleteFontsBatch, downloadFontFile } from "../api/client";
 import type { FontItem } from "../api/client";
 import { useConfirm } from "../composables/useConfirm";
 import KButton from "./KButton.vue";
@@ -21,13 +21,17 @@ const fontSearch = ref("");
 const fontLoading = ref(false);
 const fontAllLoaded = ref(false);
 const selectedIds = reactive(new Set<string>());
-const deleteNotice = ref("");
-let deleteNoticeTimer = 0;
+const downloadingIds = reactive(new Set<string>());
+const batchDownloading = ref(false);
+const actionNotice = ref("");
+let actionNoticeTimer = 0;
 
-const showDeleteNotice = (msg: string) => {
-  clearTimeout(deleteNoticeTimer);
-  deleteNotice.value = msg;
-  deleteNoticeTimer = window.setTimeout(() => { deleteNotice.value = ""; }, 2000);
+const selectedFonts = computed(() => fonts.value.filter(font => selectedIds.has(font.id)));
+
+const showActionNotice = (msg: string) => {
+  clearTimeout(actionNoticeTimer);
+  actionNotice.value = msg;
+  actionNoticeTimer = window.setTimeout(() => { actionNotice.value = ""; }, 2000);
 };
 
 // Sentinel for infinite scroll
@@ -95,7 +99,7 @@ const deleteSelected = async () => {
   if (!ok) return;
   try {
     await deleteFontsBatch(ids);
-    showDeleteNotice(`×${ids.length} ${t("deleted")}`);
+    showActionNotice(`×${ids.length} ${t("deleted")}`);
     loadFontList(true);
   } catch (e) {
     useConfirm().alert({ title: t('errorTitle'), message: String(e instanceof Error ? e.message : e), variant: 'danger' });
@@ -105,10 +109,81 @@ const deleteSelected = async () => {
 const deleteSingle = async (id: string) => {
   try {
     await deleteFont(id);
-    showDeleteNotice(t("deleted"));
+    showActionNotice(t("deleted"));
     loadFontList(true);
   } catch (e) {
     useConfirm().alert({ title: t('errorTitle'), message: String(e instanceof Error ? e.message : e), variant: 'danger' });
+  }
+};
+
+const uniqueFilename = (used: Set<string>, filename: string) => {
+  if (!used.has(filename)) {
+    used.add(filename);
+    return filename;
+  }
+
+  const dot = filename.lastIndexOf(".");
+  const base = dot > 0 ? filename.slice(0, dot) : filename;
+  const ext = dot > 0 ? filename.slice(dot) : "";
+  let index = 2;
+  let next = `${base} (${index})${ext}`;
+  while (used.has(next)) {
+    index++;
+    next = `${base} (${index})${ext}`;
+  }
+  used.add(next);
+  return next;
+};
+
+const saveFontBlob = async (blob: Blob, filename: string) => {
+  const { saveAs } = await import("file-saver");
+  saveAs(blob, filename);
+};
+
+const downloadSingle = async (font: FontItem) => {
+  if (downloadingIds.has(font.id)) return;
+
+  downloadingIds.add(font.id);
+  try {
+    const { blob, filename } = await downloadFontFile(font.id);
+    await saveFontBlob(blob, filename);
+    showActionNotice(t("fontDownloadStarted"));
+  } catch (e) {
+    useConfirm().alert({ title: t('errorTitle'), message: String(e instanceof Error ? e.message : e), variant: 'danger' });
+  } finally {
+    downloadingIds.delete(font.id);
+  }
+};
+
+const downloadSelected = async () => {
+  const targets = selectedFonts.value;
+  if (targets.length === 0 || batchDownloading.value) return;
+
+  batchDownloading.value = true;
+  try {
+    if (targets.length === 1) {
+      await downloadSingle(targets[0]);
+      return;
+    }
+
+    const [{ default: JSZip }, { saveAs }] = await Promise.all([import("jszip"), import("file-saver")]);
+    const zip = new JSZip();
+    const usedNames = new Set<string>();
+
+    await Promise.all(targets.map(async (font) => {
+      downloadingIds.add(font.id);
+      const { blob, filename } = await downloadFontFile(font.id);
+      zip.file(uniqueFilename(usedNames, filename), blob);
+    }));
+
+    const blob = await zip.generateAsync({ type: "blob" });
+    saveAs(blob, "fonts.zip");
+    showActionNotice(t("fontDownloadStarted"));
+  } catch (e) {
+    useConfirm().alert({ title: t('errorTitle'), message: String(e instanceof Error ? e.message : e), variant: 'danger' });
+  } finally {
+    batchDownloading.value = false;
+    for (const font of targets) downloadingIds.delete(font.id);
   }
 };
 
@@ -127,7 +202,7 @@ onMounted(() => loadFontList(true));
 onBeforeUnmount(() => {
   io?.disconnect();
   clearTimeout(searchTimer);
-  clearTimeout(deleteNoticeTimer);
+  clearTimeout(actionNoticeTimer);
 });
 </script>
 
@@ -146,11 +221,20 @@ onBeforeUnmount(() => {
       <span class="text-sm text-ink-400">{{ t('fontTotal', { n: fontTotal }) }}</span>
       <div class="flex items-center gap-2">
         <Transition name="fade">
-          <span v-if="deleteNotice" class="flex items-center gap-1 text-xs font-medium text-mint-600 select-none">
-            <CheckCircle2 class="w-3 h-3" />{{ deleteNotice }}
+          <span v-if="actionNotice" class="flex items-center gap-1 text-xs font-medium text-mint-600 select-none">
+            <CheckCircle2 class="w-3 h-3" />{{ actionNotice }}
           </span>
         </Transition>
-        <KButton v-if="selectedIds.size > 0" variant="danger" size="sm" @click="deleteSelected">
+        <KButton
+          v-if="selectedIds.size > 0"
+          variant="sky"
+          size="sm"
+          :loading="batchDownloading"
+          @click="downloadSelected"
+        >
+          <Download v-if="!batchDownloading" class="w-3.5 h-3.5" />{{ t('downloadSelectedFonts') }}
+        </KButton>
+        <KButton v-if="selectedIds.size > 0" variant="danger" size="sm" :disabled="batchDownloading" @click="deleteSelected">
           <Trash2 class="w-3.5 h-3.5" />{{ selectedIds.size }} {{ t('selected') }}
         </KButton>
         <KButton variant="ghost" size="sm" @click="loadFontList(true)">
@@ -190,6 +274,17 @@ onBeforeUnmount(() => {
             <KBadge variant="default">{{ font.weight }}</KBadge>
             <span class="text-xs text-ink-400">{{ formatBytes(font.size) }}</span>
           </div>
+
+          <button
+            class="w-7 h-7 rounded-lg flex items-center justify-center text-ink-400 hover:text-sky-500 hover:bg-sky-50 transition-colors shrink-0 disabled:opacity-50 disabled:pointer-events-none"
+            :aria-label="t('downloadFont')"
+            :title="t('downloadFont')"
+            :disabled="downloadingIds.has(font.id)"
+            @click.stop="downloadSingle(font)"
+          >
+            <Loader2 v-if="downloadingIds.has(font.id)" class="w-3.5 h-3.5 animate-spin-slow" />
+            <Download v-else class="w-3.5 h-3.5" />
+          </button>
 
           <button
             class="w-7 h-7 rounded-lg flex items-center justify-center text-ink-400 hover:text-rose-500 hover:bg-rose-50 transition-colors shrink-0"

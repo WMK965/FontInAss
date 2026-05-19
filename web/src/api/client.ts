@@ -37,6 +37,24 @@ function base64Decode(b64: string): string {
   return new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0)));
 }
 
+function filenameFromContentDisposition(value: string | null, fallback: string): string {
+  if (!value) return fallback;
+
+  const encoded = value.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      return encoded;
+    }
+  }
+
+  const quoted = value.match(/filename="([^"]+)"/i)?.[1];
+  if (quoted) return quoted;
+
+  return value.match(/filename=([^;]+)/i)?.[1]?.trim() || fallback;
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface FontItem {
@@ -210,6 +228,16 @@ export async function deleteFontsBatch(ids: string[]): Promise<number> {
   });
   const json = await res.json() as { deleted: number };
   return json.deleted ?? 0;
+}
+
+export async function downloadFontFile(id: string): Promise<{ blob: Blob; filename: string }> {
+  const res = await fetch(`${BASE}/api/fonts/${encodeURIComponent(id)}/download`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const blob = await res.blob();
+  const filename = filenameFromContentDisposition(res.headers.get("content-disposition"), "font");
+  return { blob, filename };
 }
 
 export async function browseR2(prefix = "", cursor?: string): Promise<BrowseResponse> {

@@ -5,6 +5,7 @@
  * All endpoints require X-API-Key authentication when API_KEY is configured.
  *
  * GET  /api/fonts              - List indexed fonts (paginated, searchable)
+ * GET  /api/fonts/:id/download - Download indexed font file
  * POST /api/fonts              - Upload font file(s)
  * DELETE /api/fonts/:id        - Delete single font
  * DELETE /api/fonts            - Batch delete
@@ -24,6 +25,22 @@ import { indexFont, parseFontMetadata } from "../lib/font-manager.js";
 import { findDuplicates, removeDuplicates } from "../lib/scheduler.js";
 
 const fonts = new Hono();
+
+function fontMimeType(filename: string): string {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  if (ext === "ttf") return "font/ttf";
+  if (ext === "otf") return "font/otf";
+  if (ext === "ttc" || ext === "otc") return "font/collection";
+  return "application/octet-stream";
+}
+
+function contentDisposition(filename: string): string {
+  const ascii = filename
+    .replace(/[^\x20-\x7E]/g, "_")
+    .replace(/["\\]/g, "_")
+    .trim() || "font";
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
 
 // ─── Auth middleware ───────────────────────────────────────────────────────────
 
@@ -377,6 +394,37 @@ fonts.get("/", (c) => {
     });
   } catch (e) {
     log("error", "[fonts/list] error:", e);
+    return c.json({ error: "Internal server error" }, 500);
+  }
+});
+
+// ─── Download indexed font ───────────────────────────────────────────────────
+
+fonts.get("/:id/download", async (c) => {
+  const id = c.req.param("id");
+
+  try {
+    const row = getDb()
+      .prepare<{ filename: string; r2_key: string }, [string]>(
+        "SELECT filename, r2_key FROM font_files WHERE id = ?"
+      )
+      .get(id);
+
+    if (!row) return c.json({ error: "Font not found" }, 404);
+
+    const bytes = await getFile(row.r2_key);
+    if (!bytes) return c.json({ error: "Font file not accessible" }, 404);
+
+    return new Response(bytes, {
+      headers: {
+        "Content-Type": fontMimeType(row.filename),
+        "Content-Disposition": contentDisposition(row.filename),
+        "Content-Length": String(bytes.byteLength),
+        "Cache-Control": "private, max-age=3600",
+      },
+    });
+  } catch (e) {
+    log("error", "[fonts/download] error:", e);
     return c.json({ error: "Internal server error" }, 500);
   }
 });
