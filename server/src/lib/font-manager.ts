@@ -55,6 +55,35 @@ function stripWeightSuffix(nameLower: string): { base: string; weight: number } 
   return null;
 }
 
+function normalizeLooseName(nameLower: string): string {
+  return nameLower.normalize("NFKC").toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+function lookupFontsByLooseNames(names: string[]): FontLookupRow[] {
+  const normalized = [...new Set(names.map(normalizeLooseName).filter(Boolean))];
+  if (normalized.length === 0) return [];
+
+  const db = getDb();
+  const CHUNK = 200;
+  const rows: FontLookupRow[] = [];
+  const normalizedSql = "lower(replace(replace(replace(fn.name_lower, ' ', ''), '-', ''), '_', ''))";
+
+  for (let i = 0; i < normalized.length; i += CHUNK) {
+    const chunk = normalized.slice(i, i + CHUNK);
+    const placeholders = chunk.map(() => "?").join(",");
+    const partial = db.prepare<FontLookupRow, unknown[]>(`
+      SELECT ${normalizedSql} AS name_lower, fi.font_index, fi.weight, fi.bold, fi.italic, ff.r2_key
+      FROM font_names fn
+      JOIN font_info fi ON fn.font_info_id = fi.id
+      JOIN font_files ff ON fi.file_id = ff.id
+      WHERE ${normalizedSql} IN (${placeholders})
+    `).all(...chunk);
+    rows.push(...partial);
+  }
+
+  return rows;
+}
+
 function pickBest(
   variants: FontLookupRow[],
   targetWeight: number,
@@ -150,6 +179,27 @@ export function lookupFontsBatch(
     }
   }
 
+  // ── Pass 3: loose normalized lookup for PostScript-style ASS names ───────
+  // Example: ASS uses "SourceHanSerifSC-Bold", while indexed family/full names
+  // are "Source Han Serif SC" and "Source Han Serif SC Bold".
+  const stillUnmatched = requests.filter(r => resultMap.get(r.key) === null);
+  if (stillUnmatched.length > 0) {
+    const looseRows = lookupFontsByLooseNames(stillUnmatched.map(r => r.nameLower));
+    const looseByName = new Map<string, FontLookupRow[]>();
+    for (const row of looseRows) {
+      const arr = looseByName.get(row.name_lower) ?? [];
+      arr.push(row);
+      looseByName.set(row.name_lower, arr);
+    }
+
+    for (const req of stillUnmatched) {
+      const variants = looseByName.get(normalizeLooseName(req.nameLower));
+      if (variants?.length) {
+        resultMap.set(req.key, pickBest(variants, req.targetWeight, req.targetItalic));
+      }
+    }
+  }
+
   return resultMap;
 }
 
@@ -215,7 +265,7 @@ function getNames(font: opentype.Font): string[] {
   candidateBuckets.push(nameTable as Record<string, Record<string, string>>);
 
   for (const bucket of candidateBuckets) {
-    for (const field of ["fontFamily", "preferredFamily", "fullName"] as const) {
+    for (const field of ["fontFamily", "preferredFamily", "fullName", "postScriptName"] as const) {
       const entry = bucket[field];
       if (entry && typeof entry === "object") {
         for (const val of Object.values(entry)) {
@@ -227,7 +277,7 @@ function getNames(font: opentype.Font): string[] {
   return [...names].filter(Boolean);
 }
 
-const FALLBACK_NAME_IDS = new Set([1, 4, 16]); // family, full name, preferred family
+const FALLBACK_NAME_IDS = new Set([1, 4, 6, 16]); // family, full name, PostScript, preferred family
 
 function decodeUtf16Be(bytes: Uint8Array): string {
   const codeUnits: number[] = [];
@@ -311,7 +361,7 @@ function parseNamesFromSfnt(buf: ArrayBuffer, tables: Map<string, SfntTableRecor
   }
 
   const result = new Set<string>();
-  for (const id of [16, 1, 4]) {
+  for (const id of [16, 1, 4, 6]) {
     const bucket = byNameID.get(id);
     if (!bucket) continue;
     const values = bucket.primary.size > 0 ? bucket.primary : bucket.fallback;
