@@ -9,7 +9,7 @@
 import * as opentype from "opentype.js";
 import { uuencode } from "./uuencode.js";
 import { log } from "../config.js";
-import { readSfntTables } from "./font-validator.js";
+import { readSfntTables, type SfntTableRecord } from "./font-validator.js";
 
 export interface FontSubsetResult {
   /** UUencoded subset font data, ready to embed in ASS [Fonts] section */
@@ -129,6 +129,35 @@ function formatNamesForWriter(names: FontNames, writerTemplate: unknown): unknow
 }
 
 const OPTIONAL_LAYOUT_TABLES = new Set(["GDEF", "GPOS", "GSUB"]);
+const VERTICAL_TABLES = new Set(["vhea", "vmtx", "VORG"]);
+const ORIGINAL_SFNT = Symbol("originalSfnt");
+
+interface OriginalSfnt {
+  bytes: Uint8Array;
+  tables: Map<string, SfntTableRecord>;
+}
+
+type FontWithOriginalSfnt = opentype.Font & {
+  [ORIGINAL_SFNT]?: OriginalSfnt;
+};
+
+function toUint8Array(buf: ArrayBuffer): Uint8Array {
+  return new Uint8Array(buf);
+}
+
+function attachOriginalSfnt(font: opentype.Font, buf: ArrayBuffer): opentype.Font {
+  try {
+    const bytes = toUint8Array(buf);
+    const { tables } = readSfntTables(buf);
+    (font as FontWithOriginalSfnt)[ORIGINAL_SFNT] = {
+      bytes,
+      tables,
+    };
+  } catch {
+    // Parsed font is still usable; vertical preservation is best-effort.
+  }
+  return font;
+}
 
 function shouldRetryWithoutLayoutTables(buf: ArrayBuffer): boolean {
   try {
@@ -181,7 +210,7 @@ function stripOptionalLayoutTables(buf: ArrayBuffer): ArrayBuffer | null {
 
 function parseOpenTypeFace(buf: ArrayBuffer): opentype.Font {
   try {
-    return opentype.parse(buf, { lowMemory: true });
+    return attachOriginalSfnt(opentype.parse(buf, { lowMemory: true }), buf);
   } catch (e) {
     if (!shouldRetryWithoutLayoutTables(buf)) throw e;
 
@@ -189,10 +218,211 @@ function parseOpenTypeFace(buf: ArrayBuffer): opentype.Font {
     if (!stripped) throw e;
 
     try {
-      return opentype.parse(stripped, { lowMemory: true });
+      return attachOriginalSfnt(opentype.parse(stripped, { lowMemory: true }), buf);
     } catch {
       throw e;
     }
+  }
+}
+
+function sfntChecksum(bytes: Uint8Array): number {
+  let sum = 0;
+  const paddedLength = (bytes.length + 3) & ~3;
+  for (let offset = 0; offset < paddedLength; offset += 4) {
+    sum = (sum + (
+      ((bytes[offset] ?? 0) << 24) |
+      ((bytes[offset + 1] ?? 0) << 16) |
+      ((bytes[offset + 2] ?? 0) << 8) |
+      (bytes[offset + 3] ?? 0)
+    )) >>> 0;
+  }
+  return sum >>> 0;
+}
+
+function tableBytes(sfnt: OriginalSfnt, tag: string): Uint8Array | null {
+  const table = sfnt.tables.get(tag);
+  if (!table) return null;
+  return sfnt.bytes.slice(table.offset, table.offset + table.length);
+}
+
+function addOrReplaceSfntTables(fontBytes: Uint8Array, extraTables: Record<string, Uint8Array>): Uint8Array {
+  const source = fontBytes.buffer.slice(fontBytes.byteOffset, fontBytes.byteOffset + fontBytes.byteLength) as ArrayBuffer;
+  const directory = readSfntTables(source);
+  const sourceBytes = new Uint8Array(source);
+  const replacements = new Set(Object.keys(extraTables));
+  const tables = [
+    ...[...directory.tables.values()]
+      .filter(table => !replacements.has(table.tag))
+      .map(table => {
+        const data = sourceBytes.slice(table.offset, table.offset + table.length);
+        if (table.tag === "head" && data.length >= 12) {
+          data[8] = 0;
+          data[9] = 0;
+          data[10] = 0;
+          data[11] = 0;
+        }
+        return { tag: table.tag, data };
+      }),
+    ...Object.entries(extraTables).map(([tag, data]) => ({ tag, data })),
+  ].sort((a, b) => a.tag.localeCompare(b.tag));
+
+  const numTables = tables.length;
+  const headerSize = 12 + numTables * 16;
+  const offsets: number[] = [];
+  let cursor = headerSize;
+  for (const table of tables) {
+    offsets.push(cursor);
+    cursor += (table.data.length + 3) & ~3;
+  }
+
+  const output = new Uint8Array(cursor);
+  const view = new DataView(output.buffer);
+  view.setUint32(0, directory.sfntVersion, false);
+  view.setUint16(4, numTables, false);
+  const entrySelector = Math.floor(Math.log2(numTables));
+  const searchRange = (1 << entrySelector) * 16;
+  view.setUint16(6, searchRange, false);
+  view.setUint16(8, entrySelector, false);
+  view.setUint16(10, numTables * 16 - searchRange, false);
+
+  let headOffset = -1;
+  for (let i = 0; i < tables.length; i++) {
+    const table = tables[i];
+    const recordOffset = 12 + i * 16;
+    for (let j = 0; j < 4; j++) output[recordOffset + j] = table.tag.charCodeAt(j);
+    view.setUint32(recordOffset + 4, sfntChecksum(table.data), false);
+    view.setUint32(recordOffset + 8, offsets[i], false);
+    view.setUint32(recordOffset + 12, table.data.length, false);
+    output.set(table.data, offsets[i]);
+    if (table.tag === "head") headOffset = offsets[i];
+  }
+
+  if (headOffset >= 0 && headOffset + 12 <= output.length) {
+    view.setUint32(headOffset + 8, 0, false);
+    const adjustment = (0xB1B0AFBA - sfntChecksum(output)) >>> 0;
+    view.setUint32(headOffset + 8, adjustment, false);
+  }
+
+  return output;
+}
+
+function readVmtxMetric(vhea: Uint8Array, vmtx: Uint8Array, glyphIndex: number): { advanceHeight: number; topSideBearing: number } | null {
+  if (vhea.length < 36 || vmtx.length < 4) return null;
+  const vheaView = new DataView(vhea.buffer, vhea.byteOffset, vhea.byteLength);
+  const metricCount = vheaView.getUint16(34, false);
+  if (metricCount === 0) return null;
+
+  const vmtxView = new DataView(vmtx.buffer, vmtx.byteOffset, vmtx.byteLength);
+  if (glyphIndex < metricCount) {
+    const offset = glyphIndex * 4;
+    if (offset + 4 > vmtx.length) return null;
+    return {
+      advanceHeight: vmtxView.getUint16(offset, false),
+      topSideBearing: vmtxView.getInt16(offset + 2, false),
+    };
+  }
+
+  const lastLongOffset = (metricCount - 1) * 4;
+  const sideBearingOffset = metricCount * 4 + (glyphIndex - metricCount) * 2;
+  if (lastLongOffset + 2 > vmtx.length || sideBearingOffset + 2 > vmtx.length) return null;
+  return {
+    advanceHeight: vmtxView.getUint16(lastLongOffset, false),
+    topSideBearing: vmtxView.getInt16(sideBearingOffset, false),
+  };
+}
+
+function buildVheaTable(source: Uint8Array, glyphCount: number, maxAdvanceHeight: number): Uint8Array | null {
+  if (source.length < 36 || glyphCount > 0xffff) return null;
+  const table = source.slice();
+  const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
+  view.setUint16(10, Math.min(maxAdvanceHeight, 0xffff), false);
+  view.setInt16(32, 0, false);
+  view.setUint16(34, glyphCount, false);
+  return table;
+}
+
+function buildVmtxTable(sfnt: OriginalSfnt, originalGlyphIndices: number[]): { table: Uint8Array; maxAdvanceHeight: number } | null {
+  const vhea = tableBytes(sfnt, "vhea");
+  const vmtx = tableBytes(sfnt, "vmtx");
+  if (!vhea || !vmtx || originalGlyphIndices.length > 0xffff) return null;
+
+  const output = new Uint8Array(originalGlyphIndices.length * 4);
+  const view = new DataView(output.buffer);
+  let maxAdvanceHeight = 0;
+
+  for (let i = 0; i < originalGlyphIndices.length; i++) {
+    const metric = readVmtxMetric(vhea, vmtx, originalGlyphIndices[i]);
+    if (!metric) return null;
+    view.setUint16(i * 4, metric.advanceHeight, false);
+    view.setInt16(i * 4 + 2, metric.topSideBearing, false);
+    maxAdvanceHeight = Math.max(maxAdvanceHeight, metric.advanceHeight);
+  }
+
+  return { table: output, maxAdvanceHeight };
+}
+
+function parseVorgOrigins(vorg: Uint8Array): { major: number; minor: number; defaultOrigin: number; origins: Map<number, number> } | null {
+  if (vorg.length < 8) return null;
+  const view = new DataView(vorg.buffer, vorg.byteOffset, vorg.byteLength);
+  const count = view.getUint16(6, false);
+  if (8 + count * 4 > vorg.length) return null;
+
+  const origins = new Map<number, number>();
+  for (let i = 0; i < count; i++) {
+    origins.set(view.getUint16(8 + i * 4, false), view.getInt16(10 + i * 4, false));
+  }
+
+  return {
+    major: view.getUint16(0, false),
+    minor: view.getUint16(2, false),
+    defaultOrigin: view.getInt16(4, false),
+    origins,
+  };
+}
+
+function buildVorgTable(sfnt: OriginalSfnt, originalGlyphIndices: number[]): Uint8Array | null {
+  const source = tableBytes(sfnt, "VORG");
+  if (!source || originalGlyphIndices.length > 0xffff) return null;
+  const parsed = parseVorgOrigins(source);
+  if (!parsed) return null;
+
+  const output = new Uint8Array(8 + originalGlyphIndices.length * 4);
+  const view = new DataView(output.buffer);
+  view.setUint16(0, parsed.major, false);
+  view.setUint16(2, parsed.minor, false);
+  view.setInt16(4, parsed.defaultOrigin, false);
+  view.setUint16(6, originalGlyphIndices.length, false);
+  for (let i = 0; i < originalGlyphIndices.length; i++) {
+    view.setUint16(8 + i * 4, i, false);
+    view.setInt16(10 + i * 4, parsed.origins.get(originalGlyphIndices[i]) ?? parsed.defaultOrigin, false);
+  }
+  return output;
+}
+
+function preserveVerticalLayoutTables(
+  subsetBytes: Uint8Array,
+  orig: opentype.Font,
+  originalGlyphIndices: number[],
+): Uint8Array {
+  const sfnt = (orig as FontWithOriginalSfnt)[ORIGINAL_SFNT];
+  if (!sfnt) return subsetBytes;
+  if (![...VERTICAL_TABLES].some(tag => sfnt.tables.has(tag))) return subsetBytes;
+
+  try {
+    const vmtx = buildVmtxTable(sfnt, originalGlyphIndices);
+    const sourceVhea = tableBytes(sfnt, "vhea");
+    if (!vmtx || !sourceVhea) return subsetBytes;
+
+    const vhea = buildVheaTable(sourceVhea, originalGlyphIndices.length, vmtx.maxAdvanceHeight);
+    if (!vhea) return subsetBytes;
+
+    const tables: Record<string, Uint8Array> = { vhea, vmtx: vmtx.table };
+    const vorg = buildVorgTable(sfnt, originalGlyphIndices);
+    if (vorg) tables.VORG = vorg;
+    return addOrReplaceSfntTables(subsetBytes, tables);
+  } catch (e) {
+    log("warn", `[subset] failed to preserve vertical layout tables: ${e instanceof Error ? e.message : String(e)}`);
+    return subsetBytes;
   }
 }
 
@@ -247,6 +477,7 @@ export function subsetParsedFont(
     });
 
     const glyphs: opentype.Glyph[] = [notdef];
+    const originalGlyphIndices: number[] = [0];
     const seen = new Set<number>([0]);
     const missing: string[] = [];
 
@@ -280,6 +511,7 @@ export function subsetParsedFont(
         advanceWidth: origGlyph.advanceWidth,
         path: newPath,
       }));
+      originalGlyphIndices.push(glyphIndex);
       seen.add(cp);
     }
 
@@ -397,7 +629,7 @@ export function subsetParsedFont(
     }
     if (os2Table) newFont.tables.os2 = os2Table;
 
-    const subsetBytes = new Uint8Array(newFont.toArrayBuffer());
+    const subsetBytes = preserveVerticalLayoutTables(new Uint8Array(newFont.toArrayBuffer()), orig, originalGlyphIndices);
     const encoded = uuencode(subsetBytes);
 
     const bTag = weight > 400 ? "B" : "";
