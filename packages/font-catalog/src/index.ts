@@ -37,6 +37,8 @@ export interface FontLookupRow {
   bold: boolean;
   italic: boolean;
   key: string;
+  /** File size in bytes; used as tie-breaker to prefer full fonts over stubs/subsets. */
+  size: number;
 }
 
 export interface FontFileRecord {
@@ -79,6 +81,8 @@ export interface FontFileStore {
   exists(key: string): boolean;
   browse(prefix: string): { folders: string[]; files: FontFileObject[] };
   list(prefix?: string): FontFileObject[];
+  /** Count font files under a prefix (optional for lightweight stores). */
+  count?(prefix?: string): number;
 }
 
 export interface FontMatchRequest {
@@ -93,6 +97,15 @@ export interface FontMatch {
   fontIndex: number;
   weight: number;
   italic: boolean;
+}
+
+export interface FontContributionResult {
+  filename: string;
+  status: "success" | "duplicate" | "rejected";
+  fontId: string | null;
+  faces: number;
+  sha256: string | null;
+  error: string | null;
 }
 
 const WEIGHT_SUFFIXES: Array<[string, number]> = [
@@ -118,18 +131,22 @@ export function normalizeLooseFontName(name: string): string {
   return name.normalize("NFKC").toLowerCase().replace(/[\s_-]+/g, "");
 }
 
-function pickBest(variants: FontLookupRow[], targetWeight: number, targetItalic: boolean): FontMatch {
+/** Prefer style/weight fit; when tied, prefer the larger file (full fonts over stubs/subsets). */
+export function pickBest(variants: FontLookupRow[], targetWeight: number, targetItalic: boolean): FontMatch {
   const targetBold = targetWeight >= 600;
-  const exact = variants.find((variant) =>
-    variant.weight === targetWeight && variant.bold === targetBold && variant.italic === targetItalic,
-  );
-  const best = exact ?? [...variants].sort((a, b) => {
-    const score = (variant: FontLookupRow) =>
-      Number(variant.bold !== targetBold) * 200 +
-      Number(variant.italic !== targetItalic) * 100 +
-      Math.abs(variant.weight - targetWeight);
-    return score(a) - score(b);
+  const styleScore = (variant: FontLookupRow) =>
+    Number(variant.bold !== targetBold) * 200 +
+    Number(variant.italic !== targetItalic) * 100 +
+    Math.abs(variant.weight - targetWeight);
+
+  const best = [...variants].sort((a, b) => {
+    const byStyle = styleScore(a) - styleScore(b);
+    if (byStyle !== 0) return byStyle;
+    const bySize = (b.size ?? 0) - (a.size ?? 0);
+    if (bySize !== 0) return bySize;
+    return a.key.localeCompare(b.key);
   })[0];
+
   return { key: best.key, fontIndex: best.fontIndex, weight: best.weight, italic: best.italic };
 }
 
@@ -140,6 +157,8 @@ function groupByName(rows: FontLookupRow[]): Map<string, FontLookupRow[]> {
 }
 
 export class FontCatalog {
+  private readonly contributions = new Map<string, Promise<FontContributionResult>>();
+
   constructor(
     private readonly repository: FontCatalogRepository,
     private readonly files: FontFileStore,
@@ -219,25 +238,44 @@ export class FontCatalog {
     return this.index(filename, bytes, key);
   }
 
-  async uploadByToken(filename: string, bytes: Uint8Array, targetDirectory: string): Promise<UploadResult & { status: "success" | "duplicate"; sha256: string }> {
+  async contribute(filename: string, bytes: Uint8Array, targetDirectory: string): Promise<FontContributionResult> {
     const validation = this.validate(filename, bytes);
-    if (!validation.valid) throw new Error(validation.error ?? "Invalid font");
+    if (!validation.valid) {
+      return { filename, status: "rejected", fontId: null, faces: 0, sha256: null, error: validation.error ?? "Invalid font" };
+    }
     const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const pending = this.contributions.get(sha256);
+    if (pending) return { ...(await pending), filename };
+
+    const contribution = this.contributeUnique(filename, bytes, targetDirectory, sha256);
+    this.contributions.set(sha256, contribution);
+    try {
+      return await contribution;
+    } finally {
+      this.contributions.delete(sha256);
+    }
+  }
+
+  private async contributeUnique(filename: string, bytes: Uint8Array, targetDirectory: string, sha256: string): Promise<FontContributionResult> {
     const duplicate = this.repository.findBySha256(sha256);
-    if (duplicate) return { filename, id: duplicate.id, faces: duplicate.faces, status: "duplicate", sha256 };
+    if (duplicate) return { filename, status: "duplicate", fontId: duplicate.id, faces: duplicate.faces, sha256, error: null };
     const safeName = filename.replace(/[/\\]/g, "_");
     const directory = sanitizeDirectory(targetDirectory);
-    let key = `${directory}${safeName}`;
-    if (this.repository.findByKey(key)) {
-      const dot = safeName.lastIndexOf(".");
-      const stem = dot > 0 ? safeName.slice(0, dot) : safeName;
-      const extension = dot > 0 ? safeName.slice(dot) : "";
-      key = `${directory}${stem}-${sha256.slice(0, 8)}${extension}`;
-    }
+    const dot = safeName.lastIndexOf(".");
+    const stem = dot > 0 ? safeName.slice(0, dot) : safeName;
+    const extension = dot > 0 ? safeName.slice(dot) : "";
+    let key = `${directory}${stem}-${sha256.slice(0, 12)}${extension}`;
+    if (this.repository.findByKey(key)) key = `${directory}${stem}-${sha256.slice(0, 24)}${extension}`;
+    if (this.repository.findByKey(key)) key = `${directory}${stem}-${crypto.randomUUID()}${extension}`;
     await this.files.put(key, bytes);
-    const indexed = await this.index(filename, bytes, key, sha256);
-    if (indexed.error) throw new Error(indexed.error);
-    return { ...indexed, status: "success", sha256 };
+    try {
+      const indexed = await this.index(filename, bytes, key, sha256);
+      if (indexed.error) throw new Error(indexed.error);
+      return { filename, status: "success", fontId: indexed.id, faces: indexed.faces, sha256, error: null };
+    } catch (error) {
+      await this.files.delete(key).catch(() => undefined);
+      throw error;
+    }
   }
 
   list(query: { page: number; limit: number; search: string }): FontListResponse {
@@ -262,10 +300,28 @@ export class FontCatalog {
   }
 
   stats(): FontStats {
-    const folders = new Map(this.repository.countByTopFolder().map((item) => [item.prefix, item.count]));
-    for (const folder of this.files.browse("").folders) if (!folders.has(folder)) folders.set(folder, 0);
-    const sorted = [...folders].map(([prefix, count]) => ({ prefix, count })).sort((a, b) => b.count - a.count);
-    return { total: this.repository.listFileEntries().length, folders: sorted };
+    const indexedByFolder = new Map(this.repository.countByTopFolder().map((item) => [item.prefix, item.count]));
+    for (const folder of this.files.browse("").folders) if (!indexedByFolder.has(folder)) indexedByFolder.set(folder, 0);
+
+    const countOnDisk = (prefix: string): number => {
+      if (this.files.count) return this.files.count(prefix);
+      return this.files.list(prefix).length;
+    };
+
+    const folders = [...indexedByFolder.entries()].map(([prefix, indexed]) => {
+      const onDisk = countOnDisk(prefix === "(root)/" ? "" : prefix);
+      const status =
+        onDisk === 0 && indexed === 0 ? "empty" as const
+        : indexed < onDisk ? "pending" as const
+        : indexed > onDisk ? "stale" as const
+        : "synced" as const;
+      return { prefix, count: indexed, indexed, onDisk, status };
+    }).sort((a, b) => b.onDisk - a.onDisk || b.indexed - a.indexed || a.prefix.localeCompare(b.prefix));
+
+    const onDisk = folders.reduce((sum, folder) => sum + folder.onDisk, 0);
+    const total = this.repository.listFileEntries().length;
+    const unindexed = folders.reduce((sum, folder) => sum + Math.max(0, folder.onDisk - folder.indexed), 0);
+    return { total, onDisk, unindexed, folders };
   }
 
   browse(prefix: string): BrowseResponse {

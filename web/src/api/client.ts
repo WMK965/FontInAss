@@ -3,8 +3,14 @@ import type { AppType } from "@fontinass/server/app";
 import type {
   ApiHistoryResponse,
   ApiToken,
+  ApiTokenApplication,
+  ApiTokenApplicationAdmin,
+  ApiTokenApplicationList,
+  ApiTokenApplicationStatus,
   ApiTokenStats,
+  ApiUploadResponse,
   ApiUploadHistoryItem,
+  ApiUploadResult,
   ApiUploadStatus,
   ArchiveMetadata,
   ArchivePatch,
@@ -25,13 +31,20 @@ import type {
   SharedArchive,
   SubsetOptions,
   UploadResult,
+  WhoAmIResponse,
 } from "@fontinass/contracts";
 
 export type {
   ApiHistoryResponse,
   ApiToken,
+  ApiTokenApplication,
+  ApiTokenApplicationAdmin,
+  ApiTokenApplicationList,
+  ApiTokenApplicationStatus,
   ApiTokenStats,
+  ApiUploadResponse,
   ApiUploadHistoryItem,
+  ApiUploadResult,
   ApiUploadStatus,
   ArchivePreview,
   BrowseFile,
@@ -49,6 +62,7 @@ export type {
   ScanFontsResponse,
   SharedArchive,
   UploadResult,
+  WhoAmIResponse,
 };
 export type ScanLocalResult = ScanFontsResponse;
 export type IndexFolderResponse = IndexFontsResponse;
@@ -57,10 +71,24 @@ const configuredBase = (import.meta as unknown as { env: { VITE_API_BASE_URL?: s
 const origin = configuredBase || window.location.origin;
 const api = hc<AppType>(origin).api;
 const KEY_STORAGE = "fontinass_api_key";
+export const API_KEY_CHANGED_EVENT = "fontinass:api-key-changed";
+
+function notifyApiKeyChanged(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(API_KEY_CHANGED_EVENT));
+  }
+}
 
 export function getApiKey(): string { return localStorage.getItem(KEY_STORAGE) ?? ""; }
-export function setApiKey(key: string): void { if (key) localStorage.setItem(KEY_STORAGE, key); else localStorage.removeItem(KEY_STORAGE); }
-export function clearApiKey(): void { localStorage.removeItem(KEY_STORAGE); }
+export function setApiKey(key: string): void {
+  if (key) localStorage.setItem(KEY_STORAGE, key);
+  else localStorage.removeItem(KEY_STORAGE);
+  notifyApiKeyChanged();
+}
+export function clearApiKey(): void {
+  localStorage.removeItem(KEY_STORAGE);
+  notifyApiKeyChanged();
+}
 
 function authHeaders(): Record<string, string> {
   const key = getApiKey();
@@ -87,18 +115,6 @@ export async function uploadFonts(files: File[], targetDir?: string, onProgress?
     const form = new FormData();
     form.append("file", files[index]);
     const response = await fetch(manualUrl("/api/fonts"), { method: "POST", headers: { ...authHeaders(), ...(targetDir ? { "X-Target-Dir": targetDir } : {}) }, body: form });
-    if (response.ok) results.push(...(await response.json() as { results: UploadResult[] }).results);
-    else results.push({ filename: files[index].name, id: "", faces: 0, error: (await response.json().catch(() => ({})) as { error?: string }).error ?? `HTTP ${response.status}` });
-    onProgress?.(index + 1, files.length);
-  }
-  return results;
-}
-
-export async function uploadFontsPublic(files: File[], onProgress?: (done: number, total: number) => void): Promise<UploadResult[]> {
-  const results: UploadResult[] = [];
-  for (let index = 0; index < files.length; index++) {
-    const form = new FormData(); form.append("file", files[index]);
-    const response = await fetch(manualUrl("/api/upload"), { method: "POST", body: form });
     if (response.ok) results.push(...(await response.json() as { results: UploadResult[] }).results);
     else results.push({ filename: files[index].name, id: "", faces: 0, error: (await response.json().catch(() => ({})) as { error?: string }).error ?? `HTTP ${response.status}` });
     onProgress?.(index + 1, files.length);
@@ -201,6 +217,54 @@ export async function getMissingFonts(limit = 20, showResolved = false): Promise
 export async function resolveMissingFont(fontName: string): Promise<void> { await json(await api.activity["missing-fonts"].resolve.$post({ json: { font_name: fontName } }, { headers: authHeaders() })); }
 export async function unresolveMissingFont(fontName: string): Promise<void> { await json(await api.activity["missing-fonts"].unresolve.$post({ json: { font_name: fontName } }, { headers: authHeaders() })); }
 export async function getLogStats(): Promise<LogStats> { return json(await api.activity.stats.$get()); }
+
+export async function applyForUploadAccess(input: { applicant_name: string; contact: string; purpose: string; expected_volume?: string }): Promise<{ application: ApiTokenApplication; recovery_secret: string }> {
+  return json(await api["token-applications"].$post({ json: input }));
+}
+
+export async function getUploadAccessApplication(id: string, secret: string): Promise<ApiTokenApplication> {
+  const response = await fetch(manualUrl(`/api/token-applications/${encodeURIComponent(id)}`), {
+    headers: { "X-Application-Secret": secret },
+  });
+  return (await json<{ application: ApiTokenApplication }>(response)).application;
+}
+
+export async function claimUploadAccessApplication(id: string, secret: string): Promise<{ application: ApiTokenApplication; token: ApiToken; plaintext: string }> {
+  return json(await api["token-applications"][":id"].claim.$post({ param: { id }, json: { secret } }));
+}
+
+export async function listUploadAccessApplications(page = 1, limit = 50, status?: ApiTokenApplicationStatus): Promise<ApiTokenApplicationList> {
+  return json(await api.tokens.applications.$get({ query: { page, limit, ...(status ? { status } : {}) } }, { headers: authHeaders() }));
+}
+
+export async function reviewUploadAccessApplication(id: string, input: { decision: "approve" | "reject"; public_note?: string | null; admin_note?: string | null }): Promise<ApiTokenApplicationAdmin> {
+  return (await json<{ application: ApiTokenApplicationAdmin }>(
+    await api.tokens.applications[":id"].review.$post({ param: { id }, json: input }, { headers: authHeaders() }),
+  )).application;
+}
+
+export async function verifyUploadCredential(credential: string): Promise<WhoAmIResponse> {
+  return json(await fetch(manualUrl("/api/v1/whoami"), { headers: { Authorization: `Bearer ${credential}` } }));
+}
+
+export async function getMyUploadHistory(credential: string, page = 1, limit = 20, status?: ApiUploadStatus): Promise<ApiHistoryResponse> {
+  const query = new URLSearchParams({ page: String(page), limit: String(limit) });
+  if (status) query.set("status", status);
+  return json(await fetch(manualUrl(`/api/v1/history?${query}`), { headers: { Authorization: `Bearer ${credential}` } }));
+}
+
+export async function uploadFontsWithCredential(files: File[], credential: string): Promise<ApiUploadResponse> {
+  const form = new FormData();
+  files.forEach((file) => form.append("file", file));
+  const response = await fetch(manualUrl("/api/v1/upload"), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${credential}` },
+    body: form,
+  });
+  const body = await response.json().catch(() => ({})) as Partial<ApiUploadResponse> & { error?: string };
+  if (Array.isArray(body.results) && body.summary) return body as ApiUploadResponse;
+  throw new Error(body.error ?? `HTTP ${response.status}`);
+}
 
 export async function listApiTokens(): Promise<ApiToken[]> { return (await json<{ data: ApiToken[] }>(await api.tokens.$get({}, { headers: authHeaders() }))).data; }
 export async function getApiTokenStats(): Promise<ApiTokenStats> { return json(await api.tokens.stats.$get({}, { headers: authHeaders() })); }

@@ -8,11 +8,14 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import {
   ApiHistoryQuerySchema,
+  ApiTokenApplicationListQuerySchema,
+  ApiTokenApplicationSecretSchema,
   ArchiveMetadataSchema,
   ArchivePatchSchema,
   BrowseQuerySchema,
   CODE,
   CreateApiTokenSchema,
+  CreateApiTokenApplicationSchema,
   DeleteFontsRequestSchema,
   FontKeysQuerySchema,
   FontListQuerySchema,
@@ -20,23 +23,25 @@ import {
   IndexFontsRequestSchema,
   MissingFontMutationSchema,
   ProcessingLogQuerySchema,
+  ReviewApiTokenApplicationSchema,
   SubsetOptionsSchema,
   UpdateApiTokenSchema,
-  type ApiUploadStatus,
   type SubsetOptions,
 } from "@fontinass/contracts";
 import { ArchiveLibraryError } from "@fontinass/archive-library";
-import { extractUploadToken } from "@fontinass/access-control";
+import { extractUploadToken, UploadAccessError } from "@fontinass/access-control";
 import { fontMimeType } from "@fontinass/font-catalog";
+import { FontSubmissionError } from "@fontinass/font-submission";
 import type { AppContainer } from "./container.js";
 import { masterKeyMatches } from "./runtime.js";
 
 export function createApp(container: AppContainer) {
   const admin = adminMiddleware(container);
+  const noStore: MiddlewareHandler = async (c, next) => { await next(); c.header("Cache-Control", "no-store"); };
 
   const fontRoutes = new Hono()
     .use("*", admin)
-    .get("/stats", (c) => c.json(container.fonts.stats()))
+    .get("/stats", (c) => c.json({ ...container.fonts.stats(), scheduler: container.getSchedulerStatus() }))
     .get("/browse", zValidator("query", BrowseQuerySchema), (c) => c.json(container.fonts.browse(c.req.valid("query").prefix)))
     .get("/keys", zValidator("query", FontKeysQuerySchema), (c) => {
       const query = c.req.valid("query");
@@ -191,70 +196,83 @@ export function createApp(container: AppContainer) {
 
   const tokenRoutes = new Hono()
     .use("*", admin)
-    .get("/", (c) => c.json({ data: container.tokens.list() }))
-    .get("/stats", (c) => c.json(container.tokens.stats()))
-    .get("/history", zValidator("query", ApiHistoryQuerySchema), (c) => c.json(container.tokens.history(c.req.valid("query"))))
-    .post("/", zValidator("json", CreateApiTokenSchema), (c) => c.json(container.tokens.create(c.req.valid("json")), 201))
+    .use("*", noStore)
+    .get("/applications", zValidator("query", ApiTokenApplicationListQuerySchema), (c) => c.json(container.uploadAccess.listApplications(c.req.valid("query"))))
+    .post("/applications/:id/review", zValidator("param", IdParamSchema), zValidator("json", ReviewApiTokenApplicationSchema), (c) => {
+      try { return c.json({ application: container.uploadAccess.review(c.req.valid("param").id, c.req.valid("json")) }); }
+      catch (error) { return uploadAccessError(c, error); }
+    })
+    .get("/", (c) => c.json({ data: container.uploadAccess.listTokens() }))
+    .get("/stats", (c) => c.json(container.uploadAccess.stats()))
+    .get("/history", zValidator("query", ApiHistoryQuerySchema), (c) => c.json(container.uploadAccess.history(c.req.valid("query"))))
+    .post("/", zValidator("json", CreateApiTokenSchema), (c) => c.json(container.uploadAccess.issue(c.req.valid("json")), 201))
     .patch("/:id", zValidator("param", IdParamSchema), zValidator("json", UpdateApiTokenSchema), (c) => {
-      const token = container.tokens.update(c.req.valid("param").id, c.req.valid("json"));
+      const token = container.uploadAccess.update(c.req.valid("param").id, c.req.valid("json"));
       return token ? c.json({ token }) : c.json({ error: "Token not found" }, 404);
     })
-    .delete("/:id", zValidator("param", IdParamSchema), (c) => container.tokens.delete(c.req.valid("param").id) ? c.json({ ok: true as const }) : c.json({ error: "Token not found" }, 404))
+    .delete("/:id", zValidator("param", IdParamSchema), (c) => {
+      const token = container.uploadAccess.revoke(c.req.valid("param").id);
+      return token ? c.json({ token }) : c.json({ error: "Token not found" }, 404);
+    })
     .get("/:id/history", zValidator("param", IdParamSchema), zValidator("query", ApiHistoryQuerySchema), (c) => {
-      const token = container.tokens.find(c.req.valid("param").id);
+      const token = container.uploadAccess.findToken(c.req.valid("param").id);
       if (!token) return c.json({ error: "Token not found" }, 404);
-      return c.json({ token, ...container.tokens.history({ ...c.req.valid("query"), tokenId: token.id }) });
+      return c.json({ token, ...container.uploadAccess.history({ ...c.req.valid("query"), tokenId: token.id }) });
     });
 
-  const publicUpload = new Hono().post("/", async (c) => {
-    const form = await c.req.formData();
-    const files = form.getAll("file").filter((entry): entry is File => entry instanceof File);
-    if (!files.length) return c.json({ error: "No files provided. Use field name 'file'" }, 400);
-    const results = [];
-    for (const file of files) results.push(await container.fonts.upload(file.name, new Uint8Array(await file.arrayBuffer()), container.config.uploadTargetDirectory));
-    return c.json({ results }, results.some((result) => !result.error) ? 200 : 400);
-  });
+  const tokenApplicationRoutes = new Hono()
+    .use("*", noStore)
+    .post("/", zValidator("json", CreateApiTokenApplicationSchema), (c) => {
+      try { return c.json(container.uploadAccess.apply(c.req.valid("json"), hashClientIp(c)), 201); }
+      catch (error) { return uploadAccessError(c, error); }
+    })
+    .get("/:id", zValidator("param", IdParamSchema), (c) => {
+      try { return c.json({ application: container.uploadAccess.applicationStatus(c.req.valid("param").id, c.req.header("x-application-secret") ?? "") }); }
+      catch (error) { return uploadAccessError(c, error); }
+    })
+    .post("/:id/claim", zValidator("param", IdParamSchema), zValidator("json", ApiTokenApplicationSecretSchema), (c) => {
+      try { return c.json(container.uploadAccess.claim(c.req.valid("param").id, c.req.valid("json").secret)); }
+      catch (error) { return uploadAccessError(c, error); }
+    });
 
   const programUpload = new Hono()
+    .use("*", noStore)
     .get("/whoami", (c) => {
       const plaintext = extractUploadToken(c.req.header("x-upload-token"), c.req.header("authorization"));
-      const token = plaintext ? container.tokens.verify(plaintext) : null;
-      return token ? c.json({ id: token.id, name: token.name, prefix: token.prefix, upload_count: token.upload_count, total_bytes: token.total_bytes, last_used_at: token.last_used_at }) : c.json({ error: "Invalid or missing token" }, 401);
+      const token = plaintext ? container.uploadAccess.authenticate(plaintext) : null;
+      return token ? c.json({
+        id: token.id, name: token.name, prefix: token.prefix, request_count: token.request_count,
+        accepted_file_count: token.accepted_file_count, accepted_bytes: token.accepted_bytes,
+        last_used_at: token.last_used_at, expires_at: token.expires_at,
+      }) : c.json({ error: "Invalid or missing upload credential" }, 401);
+    })
+    .get("/history", zValidator("query", ApiHistoryQuerySchema), (c) => {
+      const plaintext = extractUploadToken(c.req.header("x-upload-token"), c.req.header("authorization"));
+      const token = plaintext ? container.uploadAccess.authenticate(plaintext) : null;
+      if (!token) return c.json({ error: "Invalid or missing upload credential" }, 401);
+      const query = c.req.valid("query");
+      return c.json(container.uploadAccess.history({ tokenId: token.id, status: query.status, page: query.page, limit: query.limit }));
     })
     .post("/upload", async (c) => {
       const plaintext = extractUploadToken(c.req.header("x-upload-token"), c.req.header("authorization"));
-      const token = plaintext ? container.tokens.verify(plaintext) : null;
-      if (!token) return c.json({ error: "Invalid or missing upload token" }, 401);
+      if (!plaintext) return c.json({ error: "Invalid or missing upload credential" }, 401);
+      if (!container.uploadAccess.authenticate(plaintext)) return c.json({ error: "Invalid or missing upload credential" }, 401);
+      const contentLength = Number(c.req.header("content-length") ?? 0);
+      if (Number.isFinite(contentLength) && contentLength > container.config.uploadMaxBatchSize + 1024 * 1024) {
+        return c.json({ error: "Upload batch exceeds the total size limit" }, 413);
+      }
       const form = await c.req.formData();
       const files = form.getAll("file").filter((entry): entry is File => entry instanceof File);
-      if (!files.length) return c.json({ error: "No files provided. Use field name 'file'" }, 400);
-      const clientIp = requestIp(c);
-      const userAgent = c.req.header("user-agent") ?? null;
-      const results: Array<{ filename: string; status: ApiUploadStatus; id: string; faces: number; size: number; sha256?: string; error?: string }> = [];
-      let acceptedBytes = 0;
-      for (const file of files) {
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        const validation = container.fonts.validate(file.name, bytes);
-        if (!validation.valid) {
-          const result = { filename: file.name, status: "rejected" as const, id: "", faces: 0, size: bytes.byteLength, error: validation.error ?? "Invalid font" };
-          results.push(result);
-          container.tokens.recordUpload({ token_id: token.id, font_file_id: null, filename: file.name, size: bytes.byteLength, sha256: null, status: result.status, error: result.error, client_ip: clientIp, user_agent: userAgent });
-          continue;
-        }
-        try {
-          const uploaded = await container.fonts.uploadByToken(file.name, bytes, container.config.uploadTargetDirectory);
-          results.push({ filename: file.name, status: uploaded.status, id: uploaded.id, faces: uploaded.faces, size: bytes.byteLength, sha256: uploaded.sha256 });
-          container.tokens.recordUpload({ token_id: token.id, font_file_id: uploaded.id, filename: file.name, size: bytes.byteLength, sha256: uploaded.sha256, status: uploaded.status, error: null, client_ip: clientIp, user_agent: userAgent });
-          acceptedBytes += bytes.byteLength;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          results.push({ filename: file.name, status: "error", id: "", faces: 0, size: bytes.byteLength, error: message });
-          container.tokens.recordUpload({ token_id: token.id, font_file_id: null, filename: file.name, size: bytes.byteLength, sha256: null, status: "error", error: message, client_ip: clientIp, user_agent: userAgent });
-        }
-      }
-      if (results.some((result) => result.status === "success" || result.status === "duplicate")) container.tokens.markUsed(token.id, acceptedBytes, clientIp);
-      const summary = { accepted: results.filter((result) => result.status === "success").length, duplicate: results.filter((result) => result.status === "duplicate").length, rejected: results.filter((result) => result.status === "rejected").length, error: results.filter((result) => result.status === "error").length };
-      return c.json({ summary, results }, summary.accepted || summary.duplicate ? 200 : summary.rejected ? 400 : 500);
+      if (files.length > container.config.uploadMaxFiles) return c.json({ error: `Too many files (max ${container.config.uploadMaxFiles})` }, 400);
+      try {
+        const result = await container.submissions.submit({
+          credential: plaintext,
+          files: await Promise.all(files.map(async (file) => ({ filename: file.name, bytes: new Uint8Array(await file.arrayBuffer()) }))),
+          context: { clientIp: requestIp(c), userAgent: c.req.header("user-agent") ?? null },
+        });
+        const status = result.summary.accepted || result.summary.duplicate ? 200 : result.summary.rejected ? 400 : 500;
+        return c.json(result, status);
+      } catch (error) { return fontSubmissionError(c, error); }
     });
 
   const api = new Hono()
@@ -267,7 +285,7 @@ export function createApp(container: AppContainer) {
     .route("/archives", archiveRoutes)
     .route("/activity", activityRoutes)
     .route("/tokens", tokenRoutes)
-    .route("/upload", publicUpload)
+    .route("/token-applications", tokenApplicationRoutes)
     .route("/v1", programUpload);
 
   const app = new Hono()
@@ -330,6 +348,22 @@ function archiveError(c: Context, error: unknown) {
     return c.json({ error: error.message }, status);
   }
   throw error;
+}
+
+function uploadAccessError(c: Context, error: unknown) {
+  if (!(error instanceof UploadAccessError)) throw error;
+  if (error.code === "not_found") return c.json({ error: error.message }, 404);
+  if (error.code === "invalid_secret") return c.json({ error: error.message }, 401);
+  if (error.code === "rate_limited") return c.json({ error: error.message }, 429);
+  return c.json({ error: error.message }, 409);
+}
+
+function fontSubmissionError(c: Context, error: unknown) {
+  if (!(error instanceof FontSubmissionError)) throw error;
+  if (error.code === "invalid_token") return c.json({ error: error.message }, 401);
+  if (error.code === "rate_limited") return c.json({ error: error.message }, 429);
+  if (error.code === "file_too_large" || error.code === "batch_too_large") return c.json({ error: error.message }, 413);
+  return c.json({ error: error.message }, 400);
 }
 
 function decodeHeader(value?: string): string {

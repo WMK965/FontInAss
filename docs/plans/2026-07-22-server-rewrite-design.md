@@ -181,3 +181,12 @@ bun run check
 - 字体仍为 30,718，分享记录仍为 179。
 - 已删除的 `repair-keys` 与 `import-index` 生产端点均返回 HTTP 404。
 - 最近 10 分钟容器日志共 45 行，无 `ERROR`、`panic` 或 `fatal`。
+
+## 11. 上传访问模块深化
+
+后续重构将原本分散在 `TokenManager`、Hono 路由和 `FontCatalog.uploadByToken()` 中的行为收敛为两个深模块：
+
+- `UploadAccess`：申请状态机、一次性申请凭证、管理员审核、领取、签发、验证、过期、软吊销、速率桶和审计计数。
+- `FontSubmission`：凭证鉴权、文件数/单文件/批次限制、受控并发、字体验证、SHA-256 去重、安全存储命名、结果归一化和批次审计。
+
+网页 `/upload` 与第三方程序只调用 `POST /api/v1/upload`。匿名 `POST /api/upload` 被直接删除，不提供兼容路径。SQLite 使用 `PRAGMA user_version` 执行版本化迁移，已发布 v2 表中的旧计数会迁入 `request_count`、`accepted_file_count` 和 `accepted_bytes`，上传历史在软吊销后继续保留。

@@ -71,6 +71,7 @@ export class FsFontFileStore implements FontFileStore {
     const results: FontFileObject[] = [];
     const walk = (directory: string): void => {
       for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (entry.name === ".git" || entry.name === "node_modules") continue;
         const path = resolve(directory, entry.name);
         if (entry.isDirectory()) walk(path);
         else if (entry.isFile() && FONT_EXTENSIONS.has(entry.name.split(".").pop()?.toLowerCase() ?? "")) {
@@ -81,6 +82,23 @@ export class FsFontFileStore implements FontFileStore {
     };
     walk(start);
     return results.sort((a, b) => a.key.localeCompare(b.key));
+  }
+
+  /** Count font files under a prefix without loading metadata. */
+  count(prefix = ""): number {
+    const cleanPrefix = prefix.replace(/^\/+/, "").replace(/\/$/, "");
+    const start = this.path(cleanPrefix);
+    if (!existsSync(start)) return 0;
+    let total = 0;
+    const walk = (directory: string): void => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (entry.name === ".git" || entry.name === "node_modules") continue;
+        if (entry.isDirectory()) walk(resolve(directory, entry.name));
+        else if (entry.isFile() && FONT_EXTENSIONS.has(entry.name.split(".").pop()?.toLowerCase() ?? "")) total++;
+      }
+    };
+    walk(start);
+    return total;
   }
 }
 

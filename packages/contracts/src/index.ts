@@ -117,9 +117,40 @@ export const FontKeySchema = z.object({ key: z.string(), size: z.number().int().
 export const FontKeysResponseSchema = z.object({ keys: z.array(FontKeySchema), done: z.literal(true) });
 export type FontKeysResponse = z.infer<typeof FontKeysResponseSchema>;
 
+export const FolderIndexStatusSchema = z.enum(["synced", "pending", "empty", "stale"]);
+export type FolderIndexStatus = z.infer<typeof FolderIndexStatusSchema>;
+
+export const FontFolderStatsSchema = z.object({
+  prefix: z.string(),
+  /** @deprecated Use `indexed` — kept for older clients */
+  count: z.number().int().nonnegative(),
+  indexed: z.number().int().nonnegative(),
+  onDisk: z.number().int().nonnegative(),
+  status: FolderIndexStatusSchema,
+});
+export type FontFolderStats = z.infer<typeof FontFolderStatsSchema>;
+
+export const SchedulerStatusSchema = z.object({
+  enabled: z.boolean(),
+  intervalHours: z.number().int().positive(),
+  running: z.boolean(),
+  lastRunAt: z.string().nullable(),
+  nextRunAt: z.string().nullable(),
+  lastResult: z.object({
+    indexed: z.number().int().nonnegative(),
+    purged: z.number().int().nonnegative(),
+    deduplicated: z.number().int().nonnegative(),
+    error: z.string().nullable(),
+  }).nullable(),
+});
+export type SchedulerStatus = z.infer<typeof SchedulerStatusSchema>;
+
 export const FontStatsSchema = z.object({
   total: z.number().int().nonnegative(),
-  folders: z.array(z.object({ prefix: z.string(), count: z.number().int().nonnegative() })),
+  onDisk: z.number().int().nonnegative(),
+  unindexed: z.number().int().nonnegative(),
+  folders: z.array(FontFolderStatsSchema),
+  scheduler: SchedulerStatusSchema.optional(),
 });
 export type FontStats = z.infer<typeof FontStatsSchema>;
 
@@ -311,18 +342,77 @@ export const LogStatsSchema = z.object({
 });
 export type LogStats = z.infer<typeof LogStatsSchema>;
 
-// Programmatic upload token contracts.
+// Upload access applications, credentials and submission audit contracts.
+export const ApiTokenApplicationStatusSchema = z.enum(["pending", "approved", "rejected", "claimed"]);
+export type ApiTokenApplicationStatus = z.infer<typeof ApiTokenApplicationStatusSchema>;
+
+export const ApiTokenApplicationSchema = z.object({
+  id: z.string(),
+  applicant_name: z.string(),
+  contact: z.string(),
+  purpose: z.string(),
+  expected_volume: z.string().nullable(),
+  status: ApiTokenApplicationStatusSchema,
+  credential_prefix: z.string(),
+  public_note: z.string().nullable(),
+  token_id: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  reviewed_at: z.string().nullable(),
+  claimed_at: z.string().nullable(),
+});
+export type ApiTokenApplication = z.infer<typeof ApiTokenApplicationSchema>;
+
+export const ApiTokenApplicationAdminSchema = ApiTokenApplicationSchema.extend({
+  admin_note: z.string().nullable(),
+  request_ip_hash: z.string(),
+});
+export type ApiTokenApplicationAdmin = z.infer<typeof ApiTokenApplicationAdminSchema>;
+
+export const CreateApiTokenApplicationSchema = z.object({
+  applicant_name: z.string().trim().min(1).max(100),
+  contact: z.string().trim().min(3).max(200),
+  purpose: z.string().trim().min(10).max(1000),
+  expected_volume: z.string().trim().max(200).optional(),
+});
+export type CreateApiTokenApplication = z.infer<typeof CreateApiTokenApplicationSchema>;
+
+export const ReviewApiTokenApplicationSchema = z.object({
+  decision: z.enum(["approve", "reject"]),
+  public_note: z.string().trim().max(500).nullable().optional(),
+  admin_note: z.string().trim().max(500).nullable().optional(),
+});
+export type ReviewApiTokenApplication = z.infer<typeof ReviewApiTokenApplicationSchema>;
+
+export const ApiTokenApplicationListQuerySchema = PaginationQuerySchema.extend({
+  status: ApiTokenApplicationStatusSchema.optional(),
+});
+export const ApiTokenApplicationListSchema = PaginationQuerySchema.extend({
+  total: z.number().int().nonnegative(),
+  data: z.array(ApiTokenApplicationAdminSchema),
+});
+export type ApiTokenApplicationList = z.infer<typeof ApiTokenApplicationListSchema>;
+
+export const ApiTokenApplicationSecretSchema = z.object({
+  secret: z.string().trim().min(40).max(200),
+});
+export type ApiTokenApplicationSecret = z.infer<typeof ApiTokenApplicationSecretSchema>;
+
 export const ApiTokenSchema = z.object({
   id: z.string(),
+  application_id: z.string().nullable(),
   name: z.string(),
   prefix: z.string(),
   enabled: z.boolean(),
   note: z.string().nullable(),
-  upload_count: z.number().int().nonnegative(),
-  total_bytes: z.number().int().nonnegative(),
+  request_count: z.number().int().nonnegative(),
+  accepted_file_count: z.number().int().nonnegative(),
+  accepted_bytes: z.number().int().nonnegative(),
   last_used_at: z.string().nullable(),
   last_used_ip: z.string().nullable(),
   created_at: z.string(),
+  revoked_at: z.string().nullable(),
+  expires_at: z.string().nullable(),
 });
 export type ApiToken = z.infer<typeof ApiTokenSchema>;
 
@@ -330,8 +420,11 @@ export const CreateApiTokenSchema = z.object({
   name: z.string().trim().min(1).max(100),
   note: z.string().trim().max(500).optional(),
   enabled: z.boolean().default(true),
+  expires_at: z.string().datetime().nullable().optional(),
 });
-export const UpdateApiTokenSchema = CreateApiTokenSchema.partial().extend({ note: z.string().trim().max(500).nullable().optional() });
+export const UpdateApiTokenSchema = CreateApiTokenSchema.partial().extend({
+  note: z.string().trim().max(500).nullable().optional(),
+});
 export type CreateApiToken = z.infer<typeof CreateApiTokenSchema>;
 export type UpdateApiToken = z.infer<typeof UpdateApiTokenSchema>;
 
@@ -356,20 +449,42 @@ export const ApiHistoryResponseSchema = PaginationQuerySchema.extend({
 export type ApiHistoryResponse = z.infer<typeof ApiHistoryResponseSchema>;
 
 export const ApiTokenStatsSchema = z.object({
-  totals: z.object({ tokens: z.number().int().nonnegative(), uploads: z.number().int().nonnegative(), bytes: z.number().int().nonnegative() }),
+  totals: z.object({
+    tokens: z.number().int().nonnegative(),
+    active: z.number().int().nonnegative(),
+    pendingApplications: z.number().int().nonnegative(),
+    requests: z.number().int().nonnegative(),
+    acceptedFiles: z.number().int().nonnegative(),
+    bytes: z.number().int().nonnegative(),
+  }),
   byStatus: z.record(ApiUploadStatusSchema, z.number().int().nonnegative()),
 });
 export type ApiTokenStats = z.infer<typeof ApiTokenStatsSchema>;
 
 export const ApiUploadResultSchema = z.object({
-  filename: z.string(), status: ApiUploadStatusSchema, id: z.string(), faces: z.number().int().nonnegative(),
-  size: z.number().int().nonnegative(), sha256: z.string().optional(), error: z.string().optional(),
+  filename: z.string(),
+  status: ApiUploadStatusSchema,
+  font_id: z.string().nullable(),
+  faces: z.number().int().nonnegative(),
+  size: z.number().int().nonnegative(),
+  sha256: z.string().nullable(),
+  error: z.string().nullable(),
 });
+export type ApiUploadResult = z.infer<typeof ApiUploadResultSchema>;
 export const ApiUploadResponseSchema = z.object({
   summary: z.object({ accepted: z.number().int(), duplicate: z.number().int(), rejected: z.number().int(), error: z.number().int() }),
   results: z.array(ApiUploadResultSchema),
 });
+export type ApiUploadResponse = z.infer<typeof ApiUploadResponseSchema>;
 
-export const WhoAmIResponseSchema = z.object({
-  id: z.string(), name: z.string(), prefix: z.string(), upload_count: z.number().int(), total_bytes: z.number().int(), last_used_at: z.string().nullable(),
+export const WhoAmIResponseSchema = ApiTokenSchema.pick({
+  id: true,
+  name: true,
+  prefix: true,
+  request_count: true,
+  accepted_file_count: true,
+  accepted_bytes: true,
+  last_used_at: true,
+  expires_at: true,
 });
+export type WhoAmIResponse = z.infer<typeof WhoAmIResponseSchema>;

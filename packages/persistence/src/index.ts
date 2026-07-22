@@ -8,16 +8,25 @@ import type {
   FontLookupRow,
 } from "@fontinass/font-catalog";
 import type { ArchiveRecord, ArchiveRepository } from "@fontinass/archive-library";
-import type { ApiTokenRecord, ApiTokenRepository } from "@fontinass/access-control";
+import type {
+  ApiTokenApplicationRecord,
+  ApiTokenRecord,
+  UploadAccessRepository,
+  UploadRequestContext,
+} from "@fontinass/access-control";
 import type { ActivityRepository, ProcessingEventInput } from "@fontinass/activity-log";
 import type {
   ApiHistoryResponse,
+  ApiTokenApplicationList,
+  ApiTokenApplicationStatus,
   ApiTokenStats,
   ApiUploadHistoryItem,
+  ApiUploadResult,
   ApiUploadStatus,
   LogStats,
   MissingFontRanking,
   ProcessingLogList,
+  ReviewApiTokenApplication,
   UpdateApiToken,
 } from "@fontinass/contracts";
 
@@ -87,16 +96,54 @@ CREATE TABLE IF NOT EXISTS upload_rate_limits (
 
 CREATE TABLE IF NOT EXISTS api_tokens (
   id TEXT PRIMARY KEY,
+  application_id TEXT UNIQUE,
   name TEXT NOT NULL,
   prefix TEXT NOT NULL UNIQUE,
   token_hash TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
   note TEXT,
-  upload_count INTEGER NOT NULL DEFAULT 0,
-  total_bytes INTEGER NOT NULL DEFAULT 0,
+  request_count INTEGER NOT NULL DEFAULT 0 CHECK(request_count >= 0),
+  accepted_file_count INTEGER NOT NULL DEFAULT 0 CHECK(accepted_file_count >= 0),
+  accepted_bytes INTEGER NOT NULL DEFAULT 0 CHECK(accepted_bytes >= 0),
   last_used_at TEXT,
   last_used_ip TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  revoked_at TEXT,
+  expires_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS api_token_applications (
+  id TEXT PRIMARY KEY,
+  applicant_name TEXT NOT NULL,
+  contact TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  expected_volume TEXT,
+  status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','claimed')),
+  credential_prefix TEXT NOT NULL UNIQUE,
+  credential_hash TEXT NOT NULL,
+  public_note TEXT,
+  admin_note TEXT,
+  request_ip_hash TEXT NOT NULL,
+  token_id TEXT UNIQUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  reviewed_at TEXT,
+  claimed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_token_applications_status_time ON api_token_applications(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS api_application_rate_limits (
+  ip_hash TEXT NOT NULL,
+  application_date TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY(ip_hash, application_date)
+);
+
+CREATE TABLE IF NOT EXISTS api_token_rate_limits (
+  token_id TEXT NOT NULL,
+  minute_bucket TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY(token_id, minute_bucket)
 );
 
 CREATE TABLE IF NOT EXISTS api_upload_history (
@@ -135,6 +182,45 @@ CREATE TABLE IF NOT EXISTS resolved_fonts (
 );
 `;
 
+const SCHEMA_VERSION = 1;
+
+function migrate(database: Database): void {
+  const current = database.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
+  if (current >= SCHEMA_VERSION) return;
+
+  database.transaction(() => {
+    addColumn(database, "api_tokens", "application_id", "TEXT");
+    addColumn(database, "api_tokens", "request_count", "INTEGER NOT NULL DEFAULT 0");
+    addColumn(database, "api_tokens", "accepted_file_count", "INTEGER NOT NULL DEFAULT 0");
+    addColumn(database, "api_tokens", "accepted_bytes", "INTEGER NOT NULL DEFAULT 0");
+    addColumn(database, "api_tokens", "revoked_at", "TEXT");
+    addColumn(database, "api_tokens", "expires_at", "TEXT");
+
+    if (columnExists(database, "api_tokens", "upload_count")) {
+      database.run("UPDATE api_tokens SET request_count = upload_count WHERE request_count = 0");
+    }
+    if (columnExists(database, "api_tokens", "total_bytes")) {
+      database.run("UPDATE api_tokens SET accepted_bytes = total_bytes WHERE accepted_bytes = 0");
+    }
+    database.run(`
+      UPDATE api_tokens SET accepted_file_count = (
+        SELECT COUNT(*) FROM api_upload_history h
+        WHERE h.token_id = api_tokens.id AND h.status IN ('success','duplicate')
+      ) WHERE accepted_file_count = 0
+    `);
+    database.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_api_tokens_application ON api_tokens(application_id) WHERE application_id IS NOT NULL");
+    database.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  })();
+}
+
+function columnExists(database: Database, table: string, column: string): boolean {
+  return database.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().some((entry) => entry.name === column);
+}
+
+function addColumn(database: Database, table: string, column: string, definition: string): void {
+  if (!columnExists(database, table, column)) database.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
 export class SqliteDatabase {
   readonly raw: Database;
 
@@ -142,6 +228,7 @@ export class SqliteDatabase {
     mkdirSync(dirname(path), { recursive: true });
     this.raw = new Database(path, { create: true });
     this.raw.run(SCHEMA);
+    migrate(this.raw);
   }
 
   ping(): void {
@@ -169,6 +256,7 @@ interface LookupRow {
   bold: number;
   italic: number;
   storage_key: string;
+  size: number;
 }
 
 function toRecord(row: FontFileRow): FontFileRecord {
@@ -176,7 +264,15 @@ function toRecord(row: FontFileRow): FontFileRecord {
 }
 
 function toLookup(row: LookupRow): FontLookupRow {
-  return { nameLower: row.name_lower, fontIndex: row.face_index, weight: row.weight, bold: row.bold === 1, italic: row.italic === 1, key: row.storage_key };
+  return {
+    nameLower: row.name_lower,
+    fontIndex: row.face_index,
+    weight: row.weight,
+    bold: row.bold === 1,
+    italic: row.italic === 1,
+    key: row.storage_key,
+    size: row.size ?? 0,
+  };
 }
 
 function chunks<T>(items: T[], size = 500): T[][] {
@@ -197,7 +293,7 @@ export class SqliteFontCatalogRepository implements FontCatalogRepository {
     for (const part of chunks(names)) {
       if (!part.length) continue;
       rows.push(...this.database.raw.query<LookupRow, string[]>(`
-        SELECT n.name_lower, f.face_index, f.weight, f.bold, f.italic, ff.storage_key
+        SELECT n.name_lower, f.face_index, f.weight, f.bold, f.italic, ff.storage_key, ff.size
         FROM font_names n JOIN font_faces f ON f.id = n.face_id JOIN font_files ff ON ff.id = f.file_id
         WHERE n.name_lower IN (${placeholders(part.length)})
       `).all(...part));
@@ -211,7 +307,7 @@ export class SqliteFontCatalogRepository implements FontCatalogRepository {
     for (const part of chunks([...new Set(normalizedNames)], 200)) {
       if (!part.length) continue;
       rows.push(...this.database.raw.query<LookupRow, string[]>(`
-        SELECT ${expression} AS name_lower, f.face_index, f.weight, f.bold, f.italic, ff.storage_key
+        SELECT ${expression} AS name_lower, f.face_index, f.weight, f.bold, f.italic, ff.storage_key, ff.size
         FROM font_names n JOIN font_faces f ON f.id = n.face_id JOIN font_files ff ON ff.id = f.file_id
         WHERE ${expression} IN (${placeholders(part.length)})
       `).all(...part));
@@ -500,36 +596,67 @@ function identity(value: ArchiveRecord[keyof ArchiveRecord] | undefined): SQLQue
 }
 
 interface ApiTokenRow {
-  id: string; name: string; prefix: string; token_hash: string; enabled: number; note: string | null;
-  upload_count: number; total_bytes: number; last_used_at: string | null; last_used_ip: string | null; created_at: string;
+  id: string; application_id: string | null; name: string; prefix: string; token_hash: string; enabled: number; note: string | null;
+  request_count: number; accepted_file_count: number; accepted_bytes: number; last_used_at: string | null; last_used_ip: string | null;
+  created_at: string; revoked_at: string | null; expires_at: string | null;
 }
+
+interface ApiTokenApplicationRow {
+  id: string; applicant_name: string; contact: string; purpose: string; expected_volume: string | null;
+  status: ApiTokenApplicationStatus; credential_prefix: string; credential_hash: string; public_note: string | null;
+  admin_note: string | null; request_ip_hash: string; token_id: string | null; created_at: string; updated_at: string;
+  reviewed_at: string | null; claimed_at: string | null;
+}
+
+const TOKEN_COLUMNS = `id, application_id, name, prefix, token_hash, enabled, note, request_count, accepted_file_count,
+  accepted_bytes, last_used_at, last_used_ip, created_at, revoked_at, expires_at`;
 
 function toToken(row: ApiTokenRow): ApiTokenRecord {
-  return { ...row, enabled: row.enabled === 1 };
+  return {
+    id: row.id, application_id: row.application_id, name: row.name, prefix: row.prefix, token_hash: row.token_hash,
+    enabled: row.enabled === 1, note: row.note, request_count: row.request_count, accepted_file_count: row.accepted_file_count,
+    accepted_bytes: row.accepted_bytes, last_used_at: row.last_used_at, last_used_ip: row.last_used_ip,
+    created_at: row.created_at, revoked_at: row.revoked_at, expires_at: row.expires_at,
+  };
 }
 
-export class SqliteApiTokenRepository implements ApiTokenRepository {
+function toApplication(row: ApiTokenApplicationRow): ApiTokenApplicationRecord {
+  return { ...row };
+}
+
+function toApplicationAdmin(row: ApiTokenApplicationRow) {
+  const { credential_hash: _hash, ...view } = row;
+  return view;
+}
+
+export class SqliteUploadAccessRepository implements UploadAccessRepository {
   constructor(private readonly database: SqliteDatabase) {}
 
   listTokens(): ApiTokenRecord[] {
-    return this.database.raw.query<ApiTokenRow, []>("SELECT * FROM api_tokens ORDER BY created_at DESC").all().map(toToken);
+    return this.database.raw.query<ApiTokenRow, []>(`SELECT ${TOKEN_COLUMNS} FROM api_tokens ORDER BY created_at DESC`).all().map(toToken);
   }
 
   findTokenById(id: string): ApiTokenRecord | null {
-    const row = this.database.raw.query<ApiTokenRow, [string]>("SELECT * FROM api_tokens WHERE id = ?").get(id);
+    const row = this.database.raw.query<ApiTokenRow, [string]>(`SELECT ${TOKEN_COLUMNS} FROM api_tokens WHERE id = ?`).get(id);
     return row ? toToken(row) : null;
   }
 
   findTokenByPrefix(prefix: string): ApiTokenRecord | null {
-    const row = this.database.raw.query<ApiTokenRow, [string]>("SELECT * FROM api_tokens WHERE prefix = ?").get(prefix);
+    const row = this.database.raw.query<ApiTokenRow, [string]>(`SELECT ${TOKEN_COLUMNS} FROM api_tokens WHERE prefix = ?`).get(prefix);
     return row ? toToken(row) : null;
   }
 
   insertToken(record: ApiTokenRecord): void {
     this.database.raw.query(`
-      INSERT INTO api_tokens (id, name, prefix, token_hash, enabled, note, upload_count, total_bytes, last_used_at, last_used_ip, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(record.id, record.name, record.prefix, record.token_hash, Number(record.enabled), record.note, record.upload_count, record.total_bytes, record.last_used_at, record.last_used_ip, record.created_at);
+      INSERT INTO api_tokens (
+        id, application_id, name, prefix, token_hash, enabled, note, request_count, accepted_file_count,
+        accepted_bytes, last_used_at, last_used_ip, created_at, revoked_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id, record.application_id, record.name, record.prefix, record.token_hash, Number(record.enabled), record.note,
+      record.request_count, record.accepted_file_count, record.accepted_bytes, record.last_used_at, record.last_used_ip,
+      record.created_at, record.revoked_at, record.expires_at,
+    );
   }
 
   updateToken(id: string, patch: UpdateApiToken): ApiTokenRecord | null {
@@ -537,27 +664,129 @@ export class SqliteApiTokenRepository implements ApiTokenRepository {
     const values: SQLQueryBindings[] = [];
     if (patch.name !== undefined) { assignments.push("name = ?"); values.push(patch.name.trim()); }
     if (patch.note !== undefined) { assignments.push("note = ?"); values.push(patch.note?.trim() || null); }
-    if (patch.enabled !== undefined) { assignments.push("enabled = ?"); values.push(Number(patch.enabled)); }
+    if (patch.expires_at !== undefined) { assignments.push("expires_at = ?"); values.push(patch.expires_at); }
+    if (patch.enabled !== undefined) {
+      assignments.push("enabled = ?", "revoked_at = ?");
+      values.push(Number(patch.enabled), patch.enabled ? null : new Date().toISOString());
+    }
     if (!assignments.length) return this.findTokenById(id);
-    this.database.raw.query(`UPDATE api_tokens SET ${assignments.join(", ")} WHERE id = ?`).run(...values, id);
-    return this.findTokenById(id);
+    const changed = this.database.raw.query(`UPDATE api_tokens SET ${assignments.join(", ")} WHERE id = ?`).run(...values, id).changes;
+    return changed ? this.findTokenById(id) : null;
   }
 
-  deleteToken(id: string): boolean {
-    return this.database.raw.query("DELETE FROM api_tokens WHERE id = ?").run(id).changes > 0;
+  revokeToken(id: string): ApiTokenRecord | null {
+    const now = new Date().toISOString();
+    const changed = this.database.raw.query("UPDATE api_tokens SET enabled = 0, revoked_at = COALESCE(revoked_at, ?) WHERE id = ?")
+      .run(now, id).changes;
+    return changed ? this.findTokenById(id) : null;
   }
 
-  markTokenUsed(id: string, bytes: number, ip: string | null): void {
+  insertApplication(record: ApiTokenApplicationRecord): void {
     this.database.raw.query(`
-      UPDATE api_tokens SET upload_count = upload_count + 1, total_bytes = total_bytes + ?, last_used_at = ?, last_used_ip = ? WHERE id = ?
-    `).run(bytes, new Date().toISOString(), ip, id);
+      INSERT INTO api_token_applications (
+        id, applicant_name, contact, purpose, expected_volume, status, credential_prefix, credential_hash,
+        public_note, admin_note, request_ip_hash, token_id, created_at, updated_at, reviewed_at, claimed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id, record.applicant_name, record.contact, record.purpose, record.expected_volume, record.status,
+      record.credential_prefix, record.credential_hash, record.public_note, record.admin_note, record.request_ip_hash,
+      record.token_id, record.created_at, record.updated_at, record.reviewed_at, record.claimed_at,
+    );
   }
 
-  insertHistory(item: ApiUploadHistoryItem): void {
-    this.database.raw.query(`
+  findApplicationById(id: string): ApiTokenApplicationRecord | null {
+    const row = this.database.raw.query<ApiTokenApplicationRow, [string]>("SELECT * FROM api_token_applications WHERE id = ?").get(id);
+    return row ? toApplication(row) : null;
+  }
+
+  findApplicationByCredentialPrefix(prefix: string): ApiTokenApplicationRecord | null {
+    const row = this.database.raw.query<ApiTokenApplicationRow, [string]>("SELECT * FROM api_token_applications WHERE credential_prefix = ?").get(prefix);
+    return row ? toApplication(row) : null;
+  }
+
+  listApplications(query: { status?: ApiTokenApplicationStatus; page: number; limit: number }): ApiTokenApplicationList {
+    const where = query.status ? "WHERE status = ?" : "";
+    const parameters: SQLQueryBindings[] = query.status ? [query.status] : [];
+    const total = this.database.raw.query<{ count: number }, SQLQueryBindings[]>(`SELECT COUNT(*) AS count FROM api_token_applications ${where}`)
+      .get(...parameters)?.count ?? 0;
+    const rows = this.database.raw.query<ApiTokenApplicationRow, SQLQueryBindings[]>(`
+      SELECT * FROM api_token_applications ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?
+    `).all(...parameters, query.limit, (query.page - 1) * query.limit);
+    return { total, page: query.page, limit: query.limit, data: rows.map(toApplicationAdmin) };
+  }
+
+  reviewApplication(id: string, input: ReviewApiTokenApplication, reviewedAt: string): ApiTokenApplicationRecord | null {
+    const status = input.decision === "approve" ? "approved" : "rejected";
+    const changed = this.database.raw.query(`
+      UPDATE api_token_applications SET status = ?, public_note = ?, admin_note = ?, reviewed_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'pending'
+    `).run(status, input.public_note?.trim() || null, input.admin_note?.trim() || null, reviewedAt, reviewedAt, id).changes;
+    return changed ? this.findApplicationById(id) : null;
+  }
+
+  claimApplication(id: string, token: ApiTokenRecord, claimedAt: string): { application: ApiTokenApplicationRecord; token: ApiTokenRecord } | null {
+    return this.database.raw.transaction(() => {
+      const application = this.findApplicationById(id);
+      if (!application || application.status !== "approved" || application.token_id) return null;
+      this.insertToken(token);
+      const changed = this.database.raw.query(`
+        UPDATE api_token_applications SET status = 'claimed', token_id = ?, claimed_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'approved' AND token_id IS NULL
+      `).run(token.id, claimedAt, claimedAt, id).changes;
+      if (!changed) throw new Error("Application claim race");
+      const claimed = this.findApplicationById(id);
+      return claimed ? { application: claimed, token } : null;
+    })();
+  }
+
+  consumeApplicationRateLimit(ipHash: string, date: string, limit: number): boolean {
+    return this.database.raw.transaction(() => {
+      const current = this.database.raw.query<{ count: number }, [string, string]>(
+        "SELECT count FROM api_application_rate_limits WHERE ip_hash = ? AND application_date = ?",
+      ).get(ipHash, date)?.count ?? 0;
+      if (current >= limit) return false;
+      this.database.raw.query(`
+        INSERT INTO api_application_rate_limits (ip_hash, application_date, count) VALUES (?, ?, 1)
+        ON CONFLICT(ip_hash, application_date) DO UPDATE SET count = count + 1
+      `).run(ipHash, date);
+      return true;
+    })();
+  }
+
+  consumeUploadRateLimit(tokenId: string, minute: string, limit: number): boolean {
+    return this.database.raw.transaction(() => {
+      const current = this.database.raw.query<{ count: number }, [string, string]>(
+        "SELECT count FROM api_token_rate_limits WHERE token_id = ? AND minute_bucket = ?",
+      ).get(tokenId, minute)?.count ?? 0;
+      if (current >= limit) return false;
+      this.database.raw.query(`
+        INSERT INTO api_token_rate_limits (token_id, minute_bucket, count) VALUES (?, ?, 1)
+        ON CONFLICT(token_id, minute_bucket) DO UPDATE SET count = count + 1
+      `).run(tokenId, minute);
+      return true;
+    })();
+  }
+
+  recordSubmission(tokenId: string, results: ApiUploadResult[], context: UploadRequestContext, uploadedAt: string): void {
+    const accepted = results.filter((result) => result.status === "success" || result.status === "duplicate");
+    const acceptedBytes = accepted.reduce((total, result) => total + result.size, 0);
+    const insert = this.database.raw.query(`
       INSERT INTO api_upload_history (id, token_id, font_file_id, filename, size, sha256, status, error, client_ip, user_agent, uploaded_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(item.id, item.token_id, item.font_file_id, item.filename, item.size, item.sha256, item.status, item.error, item.client_ip, item.user_agent, item.uploaded_at);
+    `);
+    this.database.raw.transaction(() => {
+      for (const result of results) {
+        insert.run(
+          crypto.randomUUID(), tokenId, result.font_id, result.filename, result.size, result.sha256, result.status,
+          result.error, context.clientIp, context.userAgent, uploadedAt,
+        );
+      }
+      this.database.raw.query(`
+        UPDATE api_tokens SET request_count = request_count + 1,
+          accepted_file_count = accepted_file_count + ?, accepted_bytes = accepted_bytes + ?,
+          last_used_at = ?, last_used_ip = ? WHERE id = ?
+      `).run(accepted.length, acceptedBytes, uploadedAt, context.clientIp, tokenId);
+    })();
   }
 
   listHistory(query: { tokenId?: string; status?: ApiUploadStatus; page: number; limit: number }): ApiHistoryResponse {
@@ -574,15 +803,35 @@ export class SqliteApiTokenRepository implements ApiTokenRepository {
   }
 
   stats(): ApiTokenStats {
-    const tokens = this.database.raw.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM api_tokens").get()?.count ?? 0;
-    const totals = this.database.raw.query<{ uploads: number; bytes: number }, []>(
-      "SELECT COALESCE(SUM(upload_count),0) AS uploads, COALESCE(SUM(total_bytes),0) AS bytes FROM api_tokens",
-    ).get() ?? { uploads: 0, bytes: 0 };
+    const now = new Date().toISOString();
+    const tokenTotals = this.database.raw.query<{
+      tokens: number; active: number; requests: number; accepted_files: number; bytes: number;
+    }, [string]>(`
+      SELECT COUNT(*) AS tokens,
+        COALESCE(SUM(CASE WHEN enabled = 1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?) THEN 1 ELSE 0 END), 0) AS active,
+        COALESCE(SUM(request_count), 0) AS requests,
+        COALESCE(SUM(accepted_file_count), 0) AS accepted_files,
+        COALESCE(SUM(accepted_bytes), 0) AS bytes
+      FROM api_tokens
+    `).get(now) ?? { tokens: 0, active: 0, requests: 0, accepted_files: 0, bytes: 0 };
+    const pendingApplications = this.database.raw.query<{ count: number }, []>(
+      "SELECT COUNT(*) AS count FROM api_token_applications WHERE status = 'pending'",
+    ).get()?.count ?? 0;
     const byStatus = { success: 0, duplicate: 0, rejected: 0, error: 0 };
     for (const row of this.database.raw.query<{ status: ApiUploadStatus; count: number }, []>(
       "SELECT status, COUNT(*) AS count FROM api_upload_history GROUP BY status",
     ).all()) byStatus[row.status] = row.count;
-    return { totals: { tokens, uploads: totals.uploads, bytes: totals.bytes }, byStatus };
+    return {
+      totals: {
+        tokens: tokenTotals.tokens,
+        active: tokenTotals.active,
+        pendingApplications,
+        requests: tokenTotals.requests,
+        acceptedFiles: tokenTotals.accepted_files,
+        bytes: tokenTotals.bytes,
+      },
+      byStatus,
+    };
   }
 }
 

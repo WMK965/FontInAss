@@ -46,7 +46,8 @@ packages/
   subtitle-processing/   ASS/SSA/SRT 解析与字体子集化
   font-catalog/          字体匹配、索引、上传与去重
   archive-library/       分享库、审核与 manifest
-  access-control/        upload token
+  access-control/        上传申请、凭证签发/验证/吊销与审计
+  font-submission/       受控字体提交、限额、去重与结果归一化
   activity-log/          处理记录与缺失字体
   persistence/           SQLite adapters
   storage/               FS 与 R2 adapters
@@ -118,6 +119,11 @@ bun run data:reindex
 | `SUBSET_CONCURRENCY` | `5` | 并发子集化数量 |
 | `CACHE_MAX_ENTRIES` | `500` | 字幕结果内存缓存条目数 |
 | `UPLOAD_TARGET_DIR` | `CatCat-Fonts/` | Web/API 字体投稿目标目录 |
+| `UPLOAD_MAX_FILES` | `20` | 单次凭证上传最大文件数 |
+| `UPLOAD_MAX_FILE_SIZE` | `104857600` | 单个字体文件最大字节数 |
+| `UPLOAD_MAX_BATCH_SIZE` | `209715200` | 单次上传总字节上限 |
+| `UPLOAD_REQUESTS_PER_MINUTE` | `30` | 单凭证每分钟请求上限 |
+| `TOKEN_APPLICATION_DAILY_LIMIT` | `3` | 单 IP 每日上传权限申请上限 |
 | `AUTO_INDEX_INTERVAL_HOURS` | `4` | 自动扫描、索引和去重周期 |
 | `SHARING_MAX_FILE_SIZE` | `209715200` | 字幕包最大压缩文件大小 |
 | `ARCHIVE_MAX_UNCOMPRESSED` | `2147483648` | 字幕包最大解压总大小 |
@@ -125,6 +131,12 @@ bun run data:reindex
 | `R2_*` | _(空)_ | 分享库使用的 Cloudflare R2 配置 |
 
 完整示例见 [.env.example](.env.example)。生产环境务必设置强随机 `API_KEY`，并通过反向代理提供 HTTPS。
+
+## 字体上传权限
+
+字体投稿不再提供匿名覆盖端点。申请人在 `/upload` 提交用途和联系方式，保存系统生成的申请凭证；管理员在字体管理页审核，批准后申请人领取同一凭证并用于网页或 `POST /api/v1/upload`。凭证上传统一执行格式校验、SHA-256 去重、安全命名、索引、速率限制与逐文件审计。
+
+管理员可继续直接签发凭证。吊销采用软吊销，上传历史会保留。
 
 ## CLI 工具
 

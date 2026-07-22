@@ -18,6 +18,7 @@
     "@fontinass/archive-library": "workspace:*",
     "@fontinass/contracts": "workspace:*",
     "@fontinass/font-catalog": "workspace:*",
+    "@fontinass/font-submission": "workspace:*",
     "@fontinass/persistence": "workspace:*",
     "@fontinass/storage": "workspace:*",
     "@fontinass/subtitle-processing": "workspace:*",

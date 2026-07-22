@@ -324,38 +324,55 @@ fi
 
 rm -f "$SAMPLE_ASS" "$SAMPLE_ASS2"
 
-# ── 16. Public Upload ───────────────────────────────────────────────────────
-section "16. Public Font Upload"
+# ── 16. Upload Access ───────────────────────────────────────────────────────
+section "16. Upload Access — Apply, Review, Claim, Upload, Revoke"
+
+api POST "/api/token-applications" -H "Content-Type: application/json" \
+  -d '{"applicant_name":"API smoke test","contact":"ops@example.invalid","purpose":"Verify the production font upload access workflow"}'
+assert_status "201" "Create upload access application"
+APP_ID=$(echo "$HTTP_BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin)["application"]["id"])')
+UPLOAD_TOKEN=$(echo "$HTTP_BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin)["recovery_secret"])')
+
+api GET "/api/token-applications/${APP_ID}" -H "X-Application-Secret: ${UPLOAD_TOKEN}"
+assert_status "200" "Read own application status"
+assert_body_contains '"pending"' "Application starts pending"
+
+api_auth POST "/api/tokens/applications/${APP_ID}/review" -H "Content-Type: application/json" \
+  -d '{"decision":"approve","public_note":"Automated deployment verification"}'
+assert_status "200" "Admin approves upload application"
+
+api POST "/api/token-applications/${APP_ID}/claim" -H "Content-Type: application/json" \
+  -d "{\"secret\":\"${UPLOAD_TOKEN}\"}"
+assert_status "200" "Applicant claims upload credential"
+TOKEN_ID=$(echo "$HTTP_BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"]["id"])')
+
+api GET "/api/v1/whoami" -H "Authorization: Bearer ${UPLOAD_TOKEN}"
+assert_status "200" "Claimed upload credential authenticates"
 
 SAMPLE_FONT="fonts/CatCat-Fonts/FZCKJF.ttf"
 if [[ -f "$SAMPLE_FONT" ]]; then
-  api POST "/api/upload" -F "file=@${SAMPLE_FONT};filename=test-upload.ttf"
-  if [[ "$HTTP_STATUS" == "200" || "$HTTP_STATUS" == "409" ]]; then
-    log_pass "Upload valid font succeeds (HTTP $HTTP_STATUS)"
-  else
-    log_fail "Upload valid font" "expected 200/409, got $HTTP_STATUS"
-  fi
+  api POST "/api/v1/upload" -H "Authorization: Bearer ${UPLOAD_TOKEN}" -F "file=@${SAMPLE_FONT};filename=deployment-smoke.ttf"
+  assert_status "200" "Credential upload accepts or deduplicates a valid font"
 else
-  log_skip "Upload valid font (sample font not found)"
+  log_skip "Credential upload valid font (sample font not found)"
 fi
 
-# Upload invalid file (not a font)
 FAKE_FONT=$(mktemp --suffix=.ttf)
 echo "this is not a font" > "$FAKE_FONT"
-api POST "/api/upload" -F "file=@${FAKE_FONT};filename=fake.ttf"
-assert_status "400" "Upload invalid font returns 400"
+api POST "/api/v1/upload" -H "Authorization: Bearer ${UPLOAD_TOKEN}" -F "file=@${FAKE_FONT};filename=fake.ttf"
+assert_status "400" "Credential upload rejects invalid font"
 rm -f "$FAKE_FONT"
 
-# Upload with wrong extension
-WRONG_EXT=$(mktemp --suffix=.exe)
-echo "binary" > "$WRONG_EXT"
-api POST "/api/upload" -F "file=@${WRONG_EXT};filename=malware.exe"
-assert_status "400" "Upload non-font extension returns 400"
-rm -f "$WRONG_EXT"
+api GET "/api/v1/history?page=1&limit=20" -H "Authorization: Bearer ${UPLOAD_TOKEN}"
+assert_status "200" "Credential reads its own upload history"
 
-# Upload with no file
+api_auth DELETE "/api/tokens/${TOKEN_ID}"
+assert_status "200" "Admin revokes credential without deleting audit history"
+api GET "/api/v1/whoami" -H "Authorization: Bearer ${UPLOAD_TOKEN}"
+assert_status "401" "Revoked credential stops immediately"
+
 api POST "/api/upload"
-assert_status "400" "Upload with no file returns 400"
+assert_status "404" "Anonymous font upload route is removed"
 
 # ── 17. Logs ────────────────────────────────────────────────────────────────
 section "17. Processing Logs"

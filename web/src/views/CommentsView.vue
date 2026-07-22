@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, onActivated, onUnmounted, watch } from "vue";
+import { ref, onMounted, onActivated, onUnmounted, watch, nextTick } from "vue";
 import { useI18n } from "vue-i18n";
-import { Loader2, RefreshCw } from "lucide-vue-next";
+import { Loader2, MessageCircleHeart, RefreshCw } from "lucide-vue-next";
 import { preloadWalineAssets, WALINE_SERVER } from "../lib/waline-loader";
 
 const { t, locale } = useI18n();
@@ -10,15 +10,55 @@ const walineEl = ref<HTMLDivElement>();
 const isLoaded = ref(false);
 const loadError = ref(false);
 let walineController: { update?: (opts: Record<string, unknown>) => void; destroy?: () => void } | null = null;
+let renderObserver: MutationObserver | null = null;
+let loadFallbackTimer: number | null = null;
+
+function clearLoadTimers() {
+  renderObserver?.disconnect();
+  renderObserver = null;
+  if (loadFallbackTimer !== null) {
+    window.clearTimeout(loadFallbackTimer);
+    loadFallbackTimer = null;
+  }
+}
+
+function markLoaded() {
+  if (isLoaded.value) return;
+  isLoaded.value = true;
+  clearLoadTimers();
+}
+
+function waitForWalineRender(root: HTMLElement) {
+  clearLoadTimers();
+
+  const ready = () =>
+    Boolean(root.querySelector(".wl-editor, .wl-cards, .wl-empty, .wl-panel"));
+
+  if (ready()) {
+    markLoaded();
+    return;
+  }
+
+  renderObserver = new MutationObserver(() => {
+    if (ready()) markLoaded();
+  });
+  renderObserver.observe(root, { childList: true, subtree: true });
+  loadFallbackTimer = window.setTimeout(markLoaded, 4500);
+}
 
 async function initWaline() {
   if (!walineEl.value) return;
   loadError.value = false;
   isLoaded.value = false;
+  clearLoadTimers();
 
   try {
     const walineModule = await preloadWalineAssets();
     walineController?.destroy?.();
+    await nextTick();
+
+    if (!walineEl.value) return;
+
     walineController = walineModule.init({
       el: walineEl.value,
       serverURL: WALINE_SERVER,
@@ -33,10 +73,11 @@ async function initWaline() {
       imageUploader: false,
       search: false,
     });
-    isLoaded.value = true;
+
+    waitForWalineRender(walineEl.value);
   } catch {
     loadError.value = true;
-    isLoaded.value = true;
+    markLoaded();
   }
 }
 
@@ -51,6 +92,7 @@ onActivated(() => {
 });
 
 onUnmounted(() => {
+  clearLoadTimers();
   walineController?.destroy?.();
   walineController = null;
 });
@@ -68,13 +110,43 @@ onUnmounted(() => {
     </header>
 
     <div class="card relative overflow-hidden">
-      <!-- Loading overlay -->
+      <!-- Loading: sakura skeleton of the composer -->
       <div
         v-if="!isLoaded"
-        class="absolute inset-0 z-10 flex min-h-[280px] flex-col items-center justify-center gap-3 bg-surface px-6 py-16 text-ink-400"
+        class="comments-loading absolute inset-0 z-10 px-4 py-4 sm:px-5 sm:py-5"
+        aria-busy="true"
+        aria-live="polite"
       >
-        <Loader2 class="h-5 w-5 animate-spin-slow text-sakura-400" />
-        <p class="text-sm">{{ t("commentsLoading") }}</p>
+        <div class="comments-skeleton-panel">
+          <div class="flex gap-3 border-b border-sakura-100/80 px-3.5 py-3">
+            <div class="comments-skeleton-bar h-3.5 w-16" />
+            <div class="comments-skeleton-bar h-3.5 flex-1" />
+            <div class="comments-skeleton-bar h-3.5 w-14" />
+            <div class="comments-skeleton-bar h-3.5 flex-1" />
+          </div>
+          <div class="space-y-2.5 px-3.5 py-4">
+            <div class="comments-skeleton-bar h-3 w-[88%]" />
+            <div class="comments-skeleton-bar h-3 w-[72%]" />
+            <div class="comments-skeleton-bar h-3 w-[48%]" />
+          </div>
+          <div class="flex items-center justify-between border-t border-sakura-100/80 px-3.5 py-2.5">
+            <div class="flex gap-2">
+              <div class="comments-skeleton-bar comments-skeleton-icon" />
+              <div class="comments-skeleton-bar comments-skeleton-icon" />
+            </div>
+            <div class="comments-skeleton-bar comments-skeleton-btn" />
+          </div>
+        </div>
+
+        <div class="mt-6 flex flex-col items-center gap-2.5 py-4">
+          <div class="flex h-10 w-10 items-center justify-center rounded-2xl bg-sakura-100 text-sakura-500">
+            <MessageCircleHeart class="h-5 w-5" />
+          </div>
+          <div class="flex items-center gap-2 text-sm font-medium text-sakura-600">
+            <Loader2 class="h-3.5 w-3.5 animate-spin-slow" />
+            <span>{{ t("commentsLoading") }}</span>
+          </div>
+        </div>
       </div>
 
       <!-- Error overlay -->
@@ -82,6 +154,9 @@ onUnmounted(() => {
         v-else-if="loadError"
         class="absolute inset-0 z-10 flex min-h-[280px] flex-col items-center justify-center gap-3 bg-surface px-6 py-16 text-center"
       >
+        <div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-rose-50 text-rose-500">
+          <MessageCircleHeart class="h-5 w-5" />
+        </div>
         <p class="text-sm text-ink-500">{{ t("commentsLoadError") }}</p>
         <button
           type="button"
@@ -96,71 +171,153 @@ onUnmounted(() => {
       <!-- Waline mount (always in DOM for init / retry) -->
       <div
         ref="walineEl"
-        class="comments-waline min-h-[280px] px-4 py-4 sm:px-5 sm:py-5"
+        class="comments-waline min-h-[280px] px-4 py-4 sm:px-5 sm:py-5 transition-opacity duration-300"
+        :class="!isLoaded || loadError ? 'opacity-0 pointer-events-none' : 'opacity-100 animate-fade-in-fast'"
       />
     </div>
   </div>
 </template>
 
 <style>
-/* Waline theme tokens — Sakura palette, light + dark */
+/* ─── Loading skeleton ──────────────────────────────────────────────────── */
+
+.comments-loading {
+  background:
+    radial-gradient(ellipse 80% 50% at 50% 0%, color-mix(in oklch, var(--color-sakura-100) 55%, transparent), transparent 70%),
+    var(--color-surface);
+}
+
+.comments-skeleton-panel {
+  border: 1px solid color-mix(in oklch, var(--color-sakura-200) 80%, transparent);
+  border-radius: 0.95rem;
+  background:
+    linear-gradient(
+      165deg,
+      color-mix(in oklch, var(--color-sakura-50) 90%, white),
+      var(--color-surface) 55%
+    );
+  box-shadow: 0 1px 0 color-mix(in oklch, var(--color-sakura-100) 70%, transparent);
+  overflow: hidden;
+  min-height: 11.5rem;
+}
+
+.comments-skeleton-bar {
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--color-sakura-100) 80%, transparent) 0%,
+    color-mix(in oklch, var(--color-sakura-200) 55%, transparent) 45%,
+    color-mix(in oklch, var(--color-sakura-100) 80%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: comments-shimmer 1.35s ease-in-out infinite;
+}
+
+.comments-skeleton-icon {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0.4rem;
+}
+
+.comments-skeleton-btn {
+  width: 4rem;
+  height: 1.75rem;
+  border-radius: 0.55rem;
+}
+
+@keyframes comments-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+.dark .comments-skeleton-panel {
+  background:
+    linear-gradient(
+      165deg,
+      color-mix(in oklch, var(--color-sakura-100) 70%, var(--color-surface)),
+      var(--color-surface) 60%
+    );
+  border-color: var(--color-sakura-200);
+}
+
+/* ─── Waline theme tokens — warm sakura, not gray ───────────────────────── */
+
 :root {
   --waline-font-size: 0.9rem;
-  --waline-white: var(--color-surface);
+  --waline-white: oklch(99% 0.004 355);
   --waline-theme-color: var(--color-sakura-500);
   --waline-active-color: var(--color-sakura-600);
   --waline-color: var(--color-ink-800);
-  --waline-bg-color: transparent;
+  --waline-bg-color: color-mix(in oklch, var(--color-sakura-50) 65%, white);
   --waline-bg-color-light: var(--color-sakura-50);
   --waline-bg-color-hover: var(--color-sakura-100);
-  --waline-border-color: var(--color-sakura-100);
-  --waline-disable-bg-color: var(--color-ink-50);
+  --waline-border-color: color-mix(in oklch, var(--color-sakura-200) 85%, var(--color-sakura-100));
+  --waline-disable-bg-color: var(--color-sakura-50);
   --waline-disable-color: var(--color-ink-400);
   --waline-code-bg-color: oklch(24% 0.02 260);
   --waline-bq-color: var(--color-sakura-200);
-  --waline-info-bg-color: var(--color-ink-50);
-  --waline-info-color: var(--color-ink-400);
+  --waline-info-bg-color: color-mix(in oklch, var(--color-sakura-50) 80%, white);
+  --waline-info-color: var(--color-ink-500);
   --waline-badge-color: var(--color-sakura-500);
   --waline-avatar-size: 2.5rem;
   --waline-m-avatar-size: 2rem;
   --waline-avatar-radius: 999px;
   --waline-border: 1px solid var(--waline-border-color);
-  --waline-border-radius: 0.875rem;
-  --waline-box-shadow: none;
+  --waline-border-radius: 0.95rem;
+  --waline-box-shadow: 0 1px 0 color-mix(in oklch, var(--color-sakura-200) 35%, transparent);
   --waline-dark-grey: var(--color-ink-600);
-  --waline-light-grey: var(--color-ink-400);
+  --waline-light-grey: var(--color-ink-500);
 }
 
 .dark {
-  --waline-white: var(--color-surface);
+  --waline-white: oklch(96% 0.01 355);
   --waline-color: var(--color-ink-800);
-  --waline-bg-color: transparent;
-  --waline-bg-color-light: var(--color-surface-raised);
-  --waline-bg-color-hover: var(--color-ink-100);
-  --waline-border-color: var(--color-ink-200);
-  --waline-disable-bg-color: var(--color-ink-100);
+  --waline-bg-color: color-mix(in oklch, var(--color-sakura-50) 55%, var(--color-surface));
+  --waline-bg-color-light: color-mix(in oklch, var(--color-sakura-100) 65%, var(--color-surface));
+  --waline-bg-color-hover: var(--color-sakura-100);
+  --waline-border-color: color-mix(in oklch, var(--color-sakura-200) 75%, transparent);
+  --waline-disable-bg-color: var(--color-sakura-50);
   --waline-disable-color: var(--color-ink-400);
   --waline-code-bg-color: oklch(16% 0.015 260);
-  --waline-bq-color: var(--color-ink-200);
-  --waline-info-bg-color: var(--color-ink-100);
+  --waline-bq-color: var(--color-sakura-200);
+  --waline-info-bg-color: var(--color-sakura-50);
   --waline-info-color: var(--color-ink-400);
   --waline-badge-color: var(--color-sakura-400);
   --waline-dark-grey: var(--color-ink-600);
   --waline-light-grey: var(--color-ink-400);
+  --waline-box-shadow: none;
 }
 
-/* ─── Layout: clean comment section ─────────────────────────────────────── */
+/* ─── Layout ────────────────────────────────────────────────────────────── */
 
 .comments-waline [data-waline] {
   font-family: var(--font-body);
 }
 
-/* Composer panel */
+/* Composer — soft sakura stationery panel */
 .comments-waline .wl-panel {
   margin: 0 0 0.25rem;
   border: 1px solid var(--waline-border-color);
   border-radius: var(--waline-border-radius);
-  background: var(--color-surface);
+  background:
+    linear-gradient(
+      165deg,
+      color-mix(in oklch, var(--color-sakura-50) 92%, white) 0%,
+      var(--color-surface) 58%
+    );
+  box-shadow:
+    0 1px 0 color-mix(in oklch, var(--color-sakura-100) 80%, transparent),
+    var(--shadow-sm);
+  overflow: hidden;
+}
+
+.dark .comments-waline .wl-panel {
+  background:
+    linear-gradient(
+      165deg,
+      color-mix(in oklch, var(--color-sakura-100) 55%, var(--color-surface)) 0%,
+      var(--color-surface) 62%
+    );
   box-shadow: none;
 }
 
@@ -172,7 +329,12 @@ onUnmounted(() => {
   border-bottom: 1px solid var(--waline-border-color);
   border-top-left-radius: var(--waline-border-radius);
   border-top-right-radius: var(--waline-border-radius);
+  background: color-mix(in oklch, var(--color-sakura-50) 70%, transparent);
   overflow: hidden;
+}
+
+.dark .comments-waline .wl-header {
+  background: color-mix(in oklch, var(--color-sakura-100) 40%, transparent);
 }
 
 .comments-waline .wl-header-item {
@@ -188,11 +350,15 @@ onUnmounted(() => {
 .comments-waline .wl-header label {
   min-width: auto;
   padding: 0.7rem 0.2rem 0.7rem 0.85rem;
-  color: var(--waline-light-grey);
+  color: var(--color-sakura-600);
   font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  font-weight: 700;
+  letter-spacing: 0.03em;
   white-space: nowrap;
+}
+
+.dark .comments-waline .wl-header label {
+  color: var(--color-sakura-400);
 }
 
 .comments-waline .wl-header input {
@@ -205,21 +371,31 @@ onUnmounted(() => {
   background: transparent;
 }
 
+.comments-waline .wl-header input::placeholder {
+  color: color-mix(in oklch, var(--color-sakura-400) 55%, var(--color-ink-400));
+}
+
 .comments-waline .wl-editor {
   width: 100%;
   min-height: 7.5rem;
   margin: 0;
-  padding: 0.85rem 1rem;
+  padding: 0.9rem 1rem;
   border-radius: 0;
   font-size: 0.9rem;
   line-height: 1.7;
   color: var(--waline-color);
-  background: transparent;
+  background: color-mix(in oklch, var(--color-surface) 88%, var(--color-sakura-50));
   box-sizing: border-box;
+  transition: background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.comments-waline .wl-editor::placeholder {
+  color: color-mix(in oklch, var(--color-sakura-400) 45%, var(--color-ink-400));
 }
 
 .comments-waline .wl-editor:focus {
-  background: var(--waline-bg-color-light);
+  background: color-mix(in oklch, var(--color-sakura-50) 55%, var(--color-surface));
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--color-sakura-300) 45%, transparent);
 }
 
 .comments-waline .wl-footer {
@@ -227,16 +403,22 @@ onUnmounted(() => {
   padding: 0.55rem 0.75rem 0.65rem;
   border-top: 1px solid var(--waline-border-color);
   gap: 0.35rem;
+  background: color-mix(in oklch, var(--color-sakura-50) 55%, transparent);
+}
+
+.dark .comments-waline .wl-footer {
+  background: color-mix(in oklch, var(--color-sakura-100) 30%, transparent);
 }
 
 .comments-waline .wl-action {
-  color: var(--waline-light-grey);
+  color: var(--color-sakura-400);
   border-radius: 0.5rem;
+  transition: color 0.15s, background 0.15s;
 }
 
 .comments-waline .wl-action:hover {
-  color: var(--waline-theme-color);
-  background: var(--waline-bg-color-light);
+  color: var(--color-sakura-600);
+  background: color-mix(in oklch, var(--color-sakura-100) 80%, transparent);
 }
 
 .comments-waline .wl-btn {
@@ -244,25 +426,36 @@ onUnmounted(() => {
   font-size: 0.78rem;
   font-weight: 600;
   padding: 0.45rem 0.95rem;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
 }
 
 .comments-waline .wl-btn.primary {
   border-color: var(--waline-theme-color);
-  background: var(--waline-theme-color);
+  background: linear-gradient(
+    145deg,
+    var(--color-sakura-400),
+    var(--color-sakura-500) 55%,
+    var(--color-sakura-600)
+  );
   color: oklch(99% 0.004 355);
+  box-shadow: 0 1px 3px color-mix(in oklch, var(--color-sakura-500) 30%, transparent);
 }
 
 .comments-waline .wl-btn.primary:hover {
   border-color: var(--waline-active-color);
-  background: var(--waline-active-color);
+  background: linear-gradient(
+    145deg,
+    var(--color-sakura-500),
+    var(--color-sakura-600)
+  );
+  box-shadow: 0 2px 8px color-mix(in oklch, var(--color-sakura-500) 35%, transparent);
 }
 
 /* Meta / sort bar */
 .comments-waline .wl-meta-head {
   padding: 1rem 0 0.35rem;
-  border-top: 1px solid var(--waline-border-color);
-  margin-top: 0.75rem;
+  border-top: 1px solid color-mix(in oklch, var(--color-sakura-100) 90%, transparent);
+  margin-top: 0.85rem;
 }
 
 .comments-waline .wl-count {
@@ -275,18 +468,24 @@ onUnmounted(() => {
 .comments-waline .wl-sort li {
   font-size: 0.75rem;
   font-weight: 500;
-  color: var(--waline-light-grey);
-  padding: 0.15rem 0.45rem;
+  color: var(--color-ink-500);
+  padding: 0.2rem 0.55rem;
   border-radius: 999px;
   transition: color 0.15s, background 0.15s;
+}
+
+.comments-waline .wl-sort li:hover {
+  color: var(--color-sakura-600);
+  background: color-mix(in oklch, var(--color-sakura-50) 80%, transparent);
 }
 
 .comments-waline .wl-sort li.active {
   color: var(--waline-theme-color);
   background: color-mix(in oklch, var(--waline-theme-color) 12%, transparent);
+  font-weight: 600;
 }
 
-/* Comment cards — classic list, not decorative tiles */
+/* Comment cards */
 .comments-waline .wl-cards {
   margin: 0;
   padding: 0;
@@ -299,7 +498,7 @@ onUnmounted(() => {
 .comments-waline .wl-card {
   margin-inline-start: 0;
   padding-bottom: 0.85rem;
-  border-bottom: 1px solid var(--waline-border-color);
+  border-bottom: 1px solid color-mix(in oklch, var(--color-sakura-100) 85%, transparent);
 }
 
 .comments-waline .wl-card-item:last-child > .wl-card {
@@ -313,8 +512,8 @@ onUnmounted(() => {
 
 .comments-waline .wl-cards .wl-user .wl-user-avatar,
 .comments-waline .wl-avatar {
-  border: 1px solid var(--waline-border-color);
-  box-shadow: none;
+  border: 1.5px solid color-mix(in oklch, var(--color-sakura-200) 70%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-sakura-50) 80%, transparent);
 }
 
 .comments-waline .wl-nick {
@@ -333,7 +532,7 @@ onUnmounted(() => {
 
 .comments-waline .wl-time {
   font-size: 0.72rem;
-  color: var(--waline-info-color);
+  color: var(--color-ink-400);
 }
 
 .comments-waline .wl-content {
@@ -359,7 +558,7 @@ onUnmounted(() => {
 
 .comments-waline .wl-comment-actions button {
   font-size: 0.72rem;
-  color: var(--waline-light-grey);
+  color: var(--color-ink-400);
   padding: 0.15rem 0.3rem;
   border-radius: 0.4rem;
   transition: color 0.15s, background 0.15s;
@@ -367,7 +566,7 @@ onUnmounted(() => {
 
 .comments-waline .wl-comment-actions button:hover {
   color: var(--waline-theme-color);
-  background: var(--waline-bg-color-light);
+  background: color-mix(in oklch, var(--color-sakura-50) 90%, transparent);
 }
 
 .comments-waline .wl-like.active {
@@ -377,7 +576,7 @@ onUnmounted(() => {
 /* Nested replies */
 .comments-waline .wl-quote {
   margin-top: 0.5rem;
-  border-inline-start: 2px solid var(--waline-border-color);
+  border-inline-start: 2px solid color-mix(in oklch, var(--color-sakura-200) 80%, transparent);
   padding-inline-start: 0.65rem;
 }
 
@@ -388,14 +587,19 @@ onUnmounted(() => {
 /* Inline reply composer */
 .comments-waline .wl-comment .wl-panel {
   margin: 0.65rem 0 0;
-  background: var(--waline-bg-color-light);
+  background:
+    linear-gradient(
+      165deg,
+      color-mix(in oklch, var(--color-sakura-50) 85%, transparent),
+      var(--color-surface)
+    );
 }
 
 /* Empty / loading / power */
 .comments-waline .wl-empty {
   padding: 2rem 1rem;
   font-size: 0.88rem;
-  color: var(--waline-light-grey);
+  color: var(--color-ink-400);
 }
 
 .comments-waline .wl-loading svg circle {
@@ -421,6 +625,14 @@ onUnmounted(() => {
   border-radius: 0.65rem;
   font-size: 0.78rem;
   font-weight: 600;
+  border-color: var(--waline-border-color);
+  color: var(--color-sakura-600);
+}
+
+.comments-waline .wl-operation button:hover {
+  border-color: var(--color-sakura-300);
+  background: var(--color-sakura-50);
+  color: var(--color-sakura-600);
 }
 
 /* Content extras */
@@ -436,6 +648,7 @@ onUnmounted(() => {
   border-radius: 0.35rem;
   font-size: 0.84em;
   padding: 0.12em 0.35em;
+  background: color-mix(in oklch, var(--color-sakura-50) 80%, transparent);
 }
 
 @media (max-width: 580px) {

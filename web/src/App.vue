@@ -2,12 +2,11 @@
 import { ref, computed, watchEffect, onMounted, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter, useRoute } from "vue-router";
-import { KeyRound, Globe, Settings2, ChevronDown, Menu, X, CheckCircle2, Moon, Sun } from "lucide-vue-next";
-import KButton from "./components/KButton.vue";
-import KInput from "./components/KInput.vue";
+import { KeyRound, Globe, Settings2, ChevronDown, Menu, X, Moon, Sun } from "lucide-vue-next";
 import SettingsPanel from "./components/SettingsPanel.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
-import { getApiKey, setApiKey, clearApiKey } from "./api/client";
+import AuthKeyModal from "./components/AuthKeyModal.vue";
+import { API_KEY_CHANGED_EVENT, getApiKey } from "./api/client";
 import { useSettings } from "./composables/useSettings";
 import { preconnectWaline, preloadWalineAssets } from "./lib/waline-loader";
 
@@ -82,11 +81,19 @@ const onEscape = (e: KeyboardEvent) => {
   }
 };
 
+// ─── API Key modal ────────────────────────────────────────────────────────────
+const keyModalOpen = ref(false);
+const hasKey = ref(!!getApiKey());
+const syncHasKey = () => { hasKey.value = !!getApiKey(); };
+const openKeyModal = () => { keyModalOpen.value = true; };
+const closeKeyModal = () => { keyModalOpen.value = false; };
+
 onMounted(() => {
   applyTheme();
   preconnectWaline();
   darkModeQuery.addEventListener("change", applyTheme);
   window.addEventListener("keydown", onEscape);
+  window.addEventListener(API_KEY_CHANGED_EVENT, syncHasKey);
   const win = window as typeof window & {
     requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
     cancelIdleCallback?: (handle: number) => void;
@@ -107,29 +114,8 @@ onUnmounted(() => {
   }
   darkModeQuery.removeEventListener("change", applyTheme);
   window.removeEventListener("keydown", onEscape);
+  window.removeEventListener(API_KEY_CHANGED_EVENT, syncHasKey);
 });
-
-// ─── API Key modal ────────────────────────────────────────────────────────────
-const keyModalOpen = ref(false);
-const keyInput     = ref(getApiKey());
-const hasKey       = computed(() => !!getApiKey());
-const keySaved     = ref(false);
-
-const openKeyModal  = () => { keyInput.value = getApiKey(); keyModalOpen.value = true; keySaved.value = false; };
-const closeKeyModal = () => { keyModalOpen.value = false; };
-
-const saveKey = () => {
-  const k = keyInput.value.trim();
-  setApiKey(k);
-  keySaved.value = true;
-  setTimeout(() => { keySaved.value = false; closeKeyModal(); }, 900);
-};
-
-const removeKey = () => {
-  clearApiKey();
-  keyInput.value = "";
-  closeKeyModal();
-};
 
 // ─── Settings popover ─────────────────────────────────────────────────────────
 const settingsOpen     = ref(false);
@@ -209,10 +195,9 @@ watchEffect(() => {
             <transition name="dropdown">
               <div
                 v-if="settingsOpen"
-                class="absolute right-0 top-full mt-2 w-80 card-raised p-5 z-50"
+                class="absolute right-0 top-full mt-2 w-80 z-50 overflow-hidden rounded-2xl border border-ink-100 bg-surface p-5 shadow-[var(--shadow-md)]"
                 @click.stop
               >
-                <div class="absolute top-0 left-0 right-0 h-0.5 rounded-t-[18px] bg-gradient-to-r from-sakura-300 to-sky-300" />
                 <SettingsPanel variant="dropdown" @close="settingsOpen = false" />
               </div>
             </transition>
@@ -361,37 +346,9 @@ watchEffect(() => {
     </footer>
   </div>
 
-  <!-- ─── API Key modal ─────────────────────────────────────────────────── -->
-  <transition name="modal">
-    <div
-      v-if="keyModalOpen"
-      class="fixed inset-0 z-50 flex items-center justify-center p-4"
-      role="dialog"
-      aria-modal="true"
-      @click.self="closeKeyModal"
-    >
-      <div class="absolute inset-0 bg-ink-950/20 backdrop-blur-sm" @click="closeKeyModal" />
-      <div class="relative card-raised p-6 w-full max-w-sm animate-scale-in">
-        <div class="absolute top-0 left-0 right-0 h-1 rounded-t-[18px] bg-gradient-to-r from-sakura-300 via-sakura-400 to-sky-300" />
-        <h2 class="font-display font-semibold text-ink-950 text-lg mb-1">{{ t('apiKeyTitle') }}</h2>
-        <p class="text-sm text-ink-400 mb-5 leading-relaxed">{{ t('apiKeyDesc') }}</p>
-        <KInput v-model="keyInput" type="password" :placeholder="t('apiKeyPlaceholder')" class="mb-4" @enter="saveKey" />
-        <div class="flex items-center gap-2">
-          <KButton variant="primary" size="md" class="flex-1" @click="saveKey">
-            <Transition name="chip-icon" mode="out-in">
-              <CheckCircle2 v-if="keySaved" key="ok" class="w-4 h-4 text-white" />
-              <span v-else key="icon" />
-            </Transition>
-            {{ keySaved ? t('saved') : t('apiKeySave') }}
-          </KButton>
-          <KButton variant="ghost" size="md" @click="closeKeyModal">{{ t('cancel') }}</KButton>
-          <KButton v-if="hasKey" variant="danger" size="icon" @click="removeKey" title="Clear key">×</KButton>
-        </div>
-      </div>
-    </div>
-  </transition>
+  <AuthKeyModal v-model:open="keyModalOpen" @saved="syncHasKey" @cleared="syncHasKey" />
 
-  <!-- ─── Mobile Settings panel (shown as bottom sheet on small screens) ── -->
+  <!-- ─── Mobile Settings panel (bottom sheet) ── -->
   <transition name="modal">
     <div
       v-if="settingsOpen"
@@ -400,9 +357,12 @@ watchEffect(() => {
       aria-modal="true"
       @click.self="settingsOpen = false"
     >
-      <div class="absolute inset-0 bg-ink-950/20 backdrop-blur-sm" @click="settingsOpen = false" />
-      <div class="relative w-full card-raised rounded-b-none rounded-t-2xl p-5 pb-8 max-h-[85vh] overflow-y-auto" @click.stop>
-        <div class="absolute top-0 left-0 right-0 h-0.5 rounded-t-2xl bg-gradient-to-r from-sakura-300 to-sky-300" />
+      <div class="absolute inset-0 bg-ink-950/40" @click="settingsOpen = false" />
+      <div
+        class="relative w-full max-h-[85vh] overflow-y-auto rounded-t-2xl border border-ink-100 bg-surface p-5 pb-8 shadow-[var(--shadow-lg)]"
+        @click.stop
+      >
+        <div class="mx-auto mb-4 h-1 w-10 rounded-full bg-ink-200" />
         <SettingsPanel variant="sheet" @close="settingsOpen = false" />
       </div>
     </div>

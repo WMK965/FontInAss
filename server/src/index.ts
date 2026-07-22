@@ -22,5 +22,5 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 export default {
   port: container.config.port,
   fetch: app.fetch,
-  maxRequestBodySize: 200 * 1024 * 1024,
+  maxRequestBodySize: Math.max(container.config.uploadMaxBatchSize, container.config.archiveMaxFileSize) + 2 * 1024 * 1024,
 };

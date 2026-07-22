@@ -14,6 +14,11 @@ export interface RuntimeConfig {
   subsetConcurrency: number;
   cacheMaxEntries: number;
   uploadTargetDirectory: string;
+  uploadMaxFiles: number;
+  uploadMaxFileSize: number;
+  uploadMaxBatchSize: number;
+  uploadRequestsPerMinute: number;
+  tokenApplicationDailyLimit: number;
   archiveMaxFileSize: number;
   archiveMaxUncompressed: number;
   contributionDailyLimit: number;
@@ -35,6 +40,11 @@ export function loadRuntimeConfig(cwd = process.cwd()): RuntimeConfig {
     subsetConcurrency: integer("SUBSET_CONCURRENCY", 5, 1, 64),
     cacheMaxEntries: integer("CACHE_MAX_ENTRIES", 500, 0, 10000),
     uploadTargetDirectory: (process.env.UPLOAD_TARGET_DIR ?? "CatCat-Fonts/").replace(/\/?$/, "/"),
+    uploadMaxFiles: integer("UPLOAD_MAX_FILES", 20, 1, 100),
+    uploadMaxFileSize: integer("UPLOAD_MAX_FILE_SIZE", 100 * 1024 * 1024, 1),
+    uploadMaxBatchSize: integer("UPLOAD_MAX_BATCH_SIZE", 200 * 1024 * 1024, 1),
+    uploadRequestsPerMinute: integer("UPLOAD_REQUESTS_PER_MINUTE", 30, 1, 1000),
+    tokenApplicationDailyLimit: integer("TOKEN_APPLICATION_DAILY_LIMIT", 3, 1, 100),
     archiveMaxFileSize: integer("SHARING_MAX_FILE_SIZE", 200 * 1024 * 1024, 1),
     archiveMaxUncompressed: integer("ARCHIVE_MAX_UNCOMPRESSED", 2 * 1024 * 1024 * 1024, 1),
     contributionDailyLimit: integer("SHARING_RATE_LIMIT", 3, 1, 1000),

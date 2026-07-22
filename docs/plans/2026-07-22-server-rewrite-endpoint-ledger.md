@@ -77,17 +77,24 @@
 | POST | `/api/tokens/` | Master key | 签发 token |
 | GET | `/api/tokens/stats` | Master key | token 统计 |
 | GET | `/api/tokens/history` | Master key | 全部上传历史 |
+| GET | `/api/tokens/applications` | Master key | 上传权限申请列表 |
+| POST | `/api/tokens/applications/:id/review` | Master key | 批准或驳回申请 |
 | PATCH | `/api/tokens/:id` | Master key | 修改 token |
-| DELETE | `/api/tokens/:id` | Master key | 吊销 token |
+| DELETE | `/api/tokens/:id` | Master key | 软吊销 token，保留审计历史 |
 | GET | `/api/tokens/:id/history` | Master key | 单 token 上传历史 |
 
-## 字体投稿
+## 上传权限申请与字体投稿
 
 | 方法 | 路径 | 认证 | 用途 |
 | --- | --- | --- | --- |
-| POST | `/api/upload` | 公共 | 网页公开字体投稿 |
-| POST | `/api/v1/upload` | Upload token | 第三方程序字体上传 |
-| GET | `/api/v1/whoami` | Upload token | 验证 token 与读取计数 |
+| POST | `/api/token-applications` | 公共、按 IP 限流 | 创建上传权限申请并返回一次性申请凭证 |
+| GET | `/api/token-applications/:id` | Application secret | 查询自己的申请状态 |
+| POST | `/api/token-applications/:id/claim` | Application secret | 领取已批准的上传凭证 |
+| POST | `/api/v1/upload` | Upload credential | 网页与第三方程序统一字体上传 |
+| GET | `/api/v1/whoami` | Upload credential | 验证凭证与读取精确计数 |
+| GET | `/api/v1/history` | Upload credential | 读取自己的上传历史 |
+
+旧匿名 `POST /api/upload` 已删除；网页不再拥有绕过凭证审计的上传路径。
 
 ## 客户端约束
 

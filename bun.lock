@@ -4,7 +4,6 @@
   "workspaces": {
     "": {
       "name": "fontinass-local",
-      "version": "2.0.0",
       "devDependencies": {
         "@types/bun": "^1.2.14",
         "typescript": "^5.8.2",
@@ -43,6 +42,15 @@
       "version": "2.0.0",
       "dependencies": {
         "@fontinass/contracts": "workspace:*",
+      },
+    },
+    "packages/font-submission": {
+      "name": "@fontinass/font-submission",
+      "version": "2.0.0",
+      "dependencies": {
+        "@fontinass/access-control": "workspace:*",
+        "@fontinass/contracts": "workspace:*",
+        "@fontinass/font-catalog": "workspace:*",
       },
     },
     "packages/persistence": {
@@ -86,6 +94,7 @@
         "@fontinass/archive-library": "workspace:*",
         "@fontinass/contracts": "workspace:*",
         "@fontinass/font-catalog": "workspace:*",
+        "@fontinass/font-submission": "workspace:*",
         "@fontinass/persistence": "workspace:*",
         "@fontinass/storage": "workspace:*",
         "@fontinass/subtitle-processing": "workspace:*",
@@ -204,6 +213,8 @@
     "@fontinass/contracts": ["@fontinass/contracts@workspace:packages/contracts"],
 
     "@fontinass/font-catalog": ["@fontinass/font-catalog@workspace:packages/font-catalog"],
+
+    "@fontinass/font-submission": ["@fontinass/font-submission@workspace:packages/font-submission"],
 
     "@fontinass/persistence": ["@fontinass/persistence@workspace:packages/persistence"],
 
