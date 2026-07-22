@@ -21,15 +21,15 @@ function fixtureFont(): Uint8Array {
   return new Uint8Array(font.toArrayBuffer());
 }
 
-describe("upload access HTTP flow", () => {
-  test("applies, approves, claims, uploads, audits and revokes without an anonymous upload route", async () => {
+describe("font access HTTP flow", () => {
+  test("separates limited public upload from reviewed member workspace access", async () => {
     const directory = mkdtempSync(join(tmpdir(), "fontinass-upload-flow-"));
     const config: RuntimeConfig = {
       port: 3000, apiKey: "admin-test-key", corsOrigin: "*", fontDirectory: join(directory, "fonts"),
       databasePath: join(directory, "data.db"), pendingDirectory: join(directory, "pending"), logDirectory: join(directory, "logs"),
       logLevel: "error", subsetConcurrency: 2, cacheMaxEntries: 0, uploadTargetDirectory: "Contributions/",
-      uploadMaxFiles: 20, uploadMaxFileSize: 100 * 1024 * 1024, uploadMaxBatchSize: 200 * 1024 * 1024,
-      uploadRequestsPerMinute: 30, tokenApplicationDailyLimit: 3,
+      publicUploadMaxFiles: 1, publicUploadMaxFileSize: 100 * 1024 * 1024, publicUploadMaxBatchSize: 200 * 1024 * 1024,
+      publicUploadRequestsPerMinute: 2, tokenApplicationDailyLimit: 3,
       archiveMaxFileSize: 200 * 1024 * 1024, archiveMaxUncompressed: 2 * 1024 * 1024 * 1024,
       contributionDailyLimit: 3, autoIndexIntervalHours: 4,
       r2: { accountId: "", accessKeyId: "", secretAccessKey: "", bucketName: "", publicUrl: "" },
@@ -66,28 +66,50 @@ describe("upload access HTTP flow", () => {
 
       const headers = { Authorization: `Bearer ${claimed.plaintext}` };
       expect((await app.request("/api/v1/whoami", { headers })).status).toBe(200);
+      const workspaceHeaders = { "X-API-Key": claimed.plaintext };
+      const sessionResponse = await app.request("/api/access/whoami", { headers: workspaceHeaders });
+      expect(sessionResponse.status).toBe(200);
+      expect((await sessionResponse.json() as { role: string }).role).toBe("member");
+      expect((await app.request("/api/fonts?page=1&limit=100&search=", { headers: workspaceHeaders })).status).toBe(200);
+      expect((await app.request("/api/fonts/stats", { headers: workspaceHeaders })).status).toBe(401);
+      expect((await app.request("/api/tokens", { headers: workspaceHeaders })).status).toBe(401);
 
-      const upload = async () => {
-        const form = new FormData();
-        form.append("file", new File([fixtureFont()], "fixture.ttf"));
-        const response = await app.request("/api/v1/upload", { method: "POST", headers, body: form });
-        return { response, body: await response.json() as ApiUploadResponse };
-      };
-      const first = await upload();
-      expect(first.response.status).toBe(200);
-      expect(first.body.results[0].status).toBe("success");
-      const second = await upload();
-      expect(second.body.results[0].status).toBe("duplicate");
+      const backendForm = new FormData();
+      backendForm.append("file", new File([fixtureFont()], "backend-a.ttf"));
+      backendForm.append("file", new File([fixtureFont()], "backend-b.ttf"));
+      const backendUpload = await app.request("/api/fonts", { method: "POST", headers: workspaceHeaders, body: backendForm });
+      expect(backendUpload.status).toBe(200);
+      const backendResults = (await backendUpload.json() as { results: Array<{ id: string }> }).results;
+      expect(backendResults).toHaveLength(2);
+      expect((await app.request(`/api/fonts/${backendResults[0].id}/download`, { headers: workspaceHeaders })).status).toBe(200);
+
+      const oversizedPublicBatch = new FormData();
+      oversizedPublicBatch.append("file", new File([fixtureFont()], "public-a.ttf"));
+      oversizedPublicBatch.append("file", new File([fixtureFont()], "public-b.ttf"));
+      expect((await app.request("/api/upload", { method: "POST", body: oversizedPublicBatch })).status).toBe(400);
+
+      const publicForm = new FormData();
+      publicForm.append("file", new File([fixtureFont()], "public.ttf"));
+      const publicResponse = await app.request("/api/upload", { method: "POST", body: publicForm });
+      expect(publicResponse.status).toBe(200);
+      expect((await publicResponse.json() as ApiUploadResponse).results[0].status).toBe("duplicate");
+
+      const memberForm = new FormData();
+      memberForm.append("file", new File([fixtureFont()], "member-a.ttf"));
+      memberForm.append("file", new File([fixtureFont()], "member-b.ttf"));
+      const memberResponse = await app.request("/api/v1/upload", { method: "POST", headers, body: memberForm });
+      expect(memberResponse.status).toBe(200);
+      expect((await memberResponse.json() as ApiUploadResponse).results).toHaveLength(2);
 
       const ownHistory = await app.request("/api/v1/history?page=1&limit=20", { headers });
-      expect((await ownHistory.json() as { total: number }).total).toBe(2);
+      expect((await ownHistory.json() as { total: number }).total).toBe(4);
 
       const revoke = await app.request(`/api/tokens/${claimed.token.id}`, { method: "DELETE", headers: { "X-API-Key": config.apiKey } });
       expect(revoke.status).toBe(200);
       expect((await app.request("/api/v1/whoami", { headers })).status).toBe(401);
+      expect((await app.request("/api/fonts?page=1&limit=20&search=", { headers: workspaceHeaders })).status).toBe(401);
       const adminHistory = await app.request(`/api/tokens/${claimed.token.id}/history?page=1&limit=20`, { headers: { "X-API-Key": config.apiKey } });
-      expect((await adminHistory.json() as { total: number }).total).toBe(2);
-      expect((await app.request("/api/upload", { method: "POST" })).status).toBe(404);
+      expect((await adminHistory.json() as { total: number }).total).toBe(4);
     } finally {
       container.close();
       rmSync(directory, { recursive: true, force: true });

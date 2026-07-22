@@ -29,49 +29,80 @@ import {
   type SubsetOptions,
 } from "@fontinass/contracts";
 import { ArchiveLibraryError } from "@fontinass/archive-library";
-import { extractUploadToken, UploadAccessError } from "@fontinass/access-control";
+import { extractUploadToken, UploadAccessError, type ApiTokenRecord } from "@fontinass/access-control";
 import { fontMimeType } from "@fontinass/font-catalog";
 import { FontSubmissionError } from "@fontinass/font-submission";
 import type { AppContainer } from "./container.js";
 import { masterKeyMatches } from "./runtime.js";
 
+type FontAccessPrincipal =
+  | { role: "admin" }
+  | { role: "member"; token: ApiTokenRecord };
+
+declare module "hono" {
+  interface ContextVariableMap {
+    fontAccessPrincipal: FontAccessPrincipal;
+  }
+}
+
 export function createApp(container: AppContainer) {
   const admin = adminMiddleware(container);
+  const fontMember = fontAccessMiddleware(container);
   const noStore: MiddlewareHandler = async (c, next) => { await next(); c.header("Cache-Control", "no-store"); };
 
   const fontRoutes = new Hono()
-    .use("*", admin)
-    .get("/stats", (c) => c.json({ ...container.fonts.stats(), scheduler: container.getSchedulerStatus() }))
-    .get("/browse", zValidator("query", BrowseQuerySchema), (c) => c.json(container.fonts.browse(c.req.valid("query").prefix)))
-    .get("/keys", zValidator("query", FontKeysQuerySchema), (c) => {
+    .get("/stats", admin, (c) => c.json({ ...container.fonts.stats(), scheduler: container.getSchedulerStatus() }))
+    .get("/browse", admin, zValidator("query", BrowseQuerySchema), (c) => c.json(container.fonts.browse(c.req.valid("query").prefix)))
+    .get("/keys", admin, zValidator("query", FontKeysQuerySchema), (c) => {
       const query = c.req.valid("query");
       const all = container.fonts.listKeys(query.prefix);
       const page = all.slice(query.cursor, query.cursor + query.limit);
       const next = query.cursor + page.length;
       return c.json({ keys: page, nextCursor: next >= all.length ? null : String(next), done: next >= all.length });
     })
-    .post("/index", zValidator("json", IndexFontsRequestSchema), async (c) => {
+    .post("/index", admin, zValidator("json", IndexFontsRequestSchema), async (c) => {
       const input = c.req.valid("json");
       return c.json(await container.fonts.indexKeys({ prefix: input.prefix, keys: input.keys, batchSize: input.batch_size }));
     })
-    .post("/scan", async (c) => c.json(await container.fonts.scan()))
-    .get("/duplicates", async (c) => {
+    .post("/scan", admin, async (c) => c.json(await container.fonts.scan()))
+    .get("/duplicates", admin, async (c) => {
       const groups = await container.fonts.findDuplicates();
       return c.json({ groups, total: groups.length });
     })
-    .post("/deduplicate", async (c) => c.json(await container.fonts.deduplicate()))
-    .get("/", zValidator("query", FontListQuerySchema), (c) => c.json(container.fonts.list(c.req.valid("query"))))
-    .post("/", async (c) => {
+    .post("/deduplicate", admin, async (c) => c.json(await container.fonts.deduplicate()))
+    .get("/", fontMember, zValidator("query", FontListQuerySchema), (c) => c.json(container.fonts.list(c.req.valid("query"))))
+    .post("/", fontMember, async (c) => {
       const form = await c.req.formData();
       const files = form.getAll("file").filter((entry): entry is File => entry instanceof File);
       if (!files.length) return c.json({ error: "No files provided. Use field name 'file'" }, 400);
       const targetDirectory = c.req.header("x-target-dir") ?? "";
       const results = [];
-      for (const file of files) results.push(await container.fonts.upload(file.name, new Uint8Array(await file.arrayBuffer()), targetDirectory));
+      const auditResults = [];
+      for (const file of files) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const result = await container.fonts.upload(file.name, bytes, targetDirectory);
+        results.push(result);
+        auditResults.push({
+          filename: file.name,
+          status: result.error ? "rejected" as const : "success" as const,
+          font_id: result.id || null,
+          faces: result.faces,
+          size: bytes.byteLength,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+          error: result.error ?? null,
+        });
+      }
+      const principal = c.get("fontAccessPrincipal");
+      if (principal.role === "member") {
+        container.uploadAccess.recordSubmission(principal.token.id, auditResults, {
+          clientIp: requestIp(c),
+          userAgent: c.req.header("user-agent") ?? null,
+        });
+      }
       return c.json({ results }, results.some((result) => !result.error) ? 200 : 400);
     })
-    .delete("/", zValidator("json", DeleteFontsRequestSchema), async (c) => c.json({ deleted: await container.fonts.delete(c.req.valid("json").ids) }))
-    .get("/:id/download", zValidator("param", IdParamSchema), async (c) => {
+    .delete("/", admin, zValidator("json", DeleteFontsRequestSchema), async (c) => c.json({ deleted: await container.fonts.delete(c.req.valid("json").ids) }))
+    .get("/:id/download", fontMember, zValidator("param", IdParamSchema), async (c) => {
       const file = await container.fonts.download(c.req.valid("param").id);
       if (!file) return c.json({ error: "Font not found" }, 404);
       return new Response(Buffer.from(file.bytes), { headers: {
@@ -81,7 +112,7 @@ export function createApp(container: AppContainer) {
         "Cache-Control": "private, max-age=3600",
       } });
     })
-    .delete("/:id", zValidator("param", IdParamSchema), async (c) => {
+    .delete("/:id", admin, zValidator("param", IdParamSchema), async (c) => {
       const deleted = await container.fonts.delete([c.req.valid("param").id]);
       return deleted ? c.json({ ok: true as const }) : c.json({ error: "Font not found" }, 404);
     });
@@ -235,12 +266,51 @@ export function createApp(container: AppContainer) {
       catch (error) { return uploadAccessError(c, error); }
     });
 
+  const accessRoutes = new Hono()
+    .use("*", noStore)
+    .get("/whoami", fontMember, (c) => {
+      const principal = c.get("fontAccessPrincipal");
+      return principal.role === "admin"
+        ? c.json({ role: "admin" as const, name: "Administrator", prefix: null })
+        : c.json({ role: "member" as const, name: principal.token.name, prefix: principal.token.prefix });
+    });
+
+  const publicUpload = new Hono()
+    .use("*", noStore)
+    .get("/policy", (c) => c.json({
+      max_files: container.config.publicUploadMaxFiles,
+      max_file_bytes: container.config.publicUploadMaxFileSize,
+      max_batch_bytes: container.config.publicUploadMaxBatchSize,
+      requests_per_minute: container.config.publicUploadRequestsPerMinute,
+    }))
+    .post("/", async (c) => {
+      const contentLength = Number(c.req.header("content-length") ?? 0);
+      if (Number.isFinite(contentLength) && contentLength > container.config.publicUploadMaxBatchSize + 1024 * 1024) {
+        return c.json({ error: "Upload batch exceeds the public total size limit" }, 413);
+      }
+      const form = await c.req.formData();
+      const files = form.getAll("file").filter((entry): entry is File => entry instanceof File);
+      if (files.length > container.config.publicUploadMaxFiles) {
+        return c.json({ error: `Too many files (max ${container.config.publicUploadMaxFiles})` }, 400);
+      }
+      try {
+        const result = await container.submissions.submitPublic({
+          files: await Promise.all(files.map(async (file) => ({ filename: file.name, bytes: new Uint8Array(await file.arrayBuffer()) }))),
+          context: { clientIp: requestIp(c), userAgent: c.req.header("user-agent") ?? null },
+          rateLimitKey: hashClientIp(c),
+        });
+        const status = result.summary.accepted || result.summary.duplicate ? 200 : result.summary.rejected ? 400 : 500;
+        return c.json(result, status);
+      } catch (error) { return fontSubmissionError(c, error); }
+    });
+
   const programUpload = new Hono()
     .use("*", noStore)
     .get("/whoami", (c) => {
       const plaintext = extractUploadToken(c.req.header("x-upload-token"), c.req.header("authorization"));
       const token = plaintext ? container.uploadAccess.authenticate(plaintext) : null;
       return token ? c.json({
+        role: "member" as const,
         id: token.id, name: token.name, prefix: token.prefix, request_count: token.request_count,
         accepted_file_count: token.accepted_file_count, accepted_bytes: token.accepted_bytes,
         last_used_at: token.last_used_at, expires_at: token.expires_at,
@@ -256,16 +326,10 @@ export function createApp(container: AppContainer) {
     .post("/upload", async (c) => {
       const plaintext = extractUploadToken(c.req.header("x-upload-token"), c.req.header("authorization"));
       if (!plaintext) return c.json({ error: "Invalid or missing upload credential" }, 401);
-      if (!container.uploadAccess.authenticate(plaintext)) return c.json({ error: "Invalid or missing upload credential" }, 401);
-      const contentLength = Number(c.req.header("content-length") ?? 0);
-      if (Number.isFinite(contentLength) && contentLength > container.config.uploadMaxBatchSize + 1024 * 1024) {
-        return c.json({ error: "Upload batch exceeds the total size limit" }, 413);
-      }
       const form = await c.req.formData();
       const files = form.getAll("file").filter((entry): entry is File => entry instanceof File);
-      if (files.length > container.config.uploadMaxFiles) return c.json({ error: `Too many files (max ${container.config.uploadMaxFiles})` }, 400);
       try {
-        const result = await container.submissions.submit({
+        const result = await container.submissions.submitCredentialed({
           credential: plaintext,
           files: await Promise.all(files.map(async (file) => ({ filename: file.name, bytes: new Uint8Array(await file.arrayBuffer()) }))),
           context: { clientIp: requestIp(c), userAgent: c.req.header("user-agent") ?? null },
@@ -284,8 +348,10 @@ export function createApp(container: AppContainer) {
     .route("/subset", subsetRoutes)
     .route("/archives", archiveRoutes)
     .route("/activity", activityRoutes)
+    .route("/access", accessRoutes)
     .route("/tokens", tokenRoutes)
     .route("/token-applications", tokenApplicationRoutes)
+    .route("/upload", publicUpload)
     .route("/v1", programUpload);
 
   const app = new Hono()
@@ -313,6 +379,27 @@ function adminMiddleware(container: AppContainer): MiddlewareHandler {
     if (!masterKeyMatches(container.config.apiKey, c.req.header("x-api-key") ?? bearer)) return c.json({ error: "Unauthorized" }, 401);
     await next();
   };
+}
+
+function fontAccessMiddleware(container: AppContainer): MiddlewareHandler {
+  return async (c, next) => {
+    const credential = accessCredential(c);
+    if (masterKeyMatches(container.config.apiKey, credential)) {
+      c.set("fontAccessPrincipal", { role: "admin" });
+      await next();
+      return;
+    }
+    const token = credential ? container.uploadAccess.authenticate(credential) : null;
+    if (!token || !credential) return c.json({ error: "Unauthorized" }, 401);
+    c.set("fontAccessPrincipal", { role: "member", token });
+    await next();
+  };
+}
+
+function accessCredential(c: Context): string | null {
+  const apiKey = c.req.header("x-api-key")?.trim();
+  if (apiKey) return apiKey;
+  return extractUploadToken(c.req.header("x-upload-token"), c.req.header("authorization"));
 }
 
 function subsetOptionsFromHeaders(c: Context): SubsetOptions {

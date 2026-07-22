@@ -24,7 +24,7 @@ class MemoryUploadAccessRepository implements UploadAccessRepository {
   readonly applications = new Map<string, ApiTokenApplicationRecord>();
   readonly history: ApiHistoryResponse["data"] = [];
   readonly applicationLimits = new Map<string, number>();
-  readonly uploadLimits = new Map<string, number>();
+  readonly publicUploadLimits = new Map<string, number>();
 
   listTokens() { return [...this.tokens.values()]; }
   findTokenById(id: string) { return this.tokens.get(id) ?? null; }
@@ -81,11 +81,11 @@ class MemoryUploadAccessRepository implements UploadAccessRepository {
     this.applicationLimits.set(key, count + 1);
     return true;
   }
-  consumeUploadRateLimit(tokenId: string, minute: string, limit: number) {
-    const key = `${tokenId}:${minute}`;
-    const count = this.uploadLimits.get(key) ?? 0;
+  consumePublicUploadRateLimit(ipHash: string, minute: string, limit: number) {
+    const key = `${ipHash}:${minute}`;
+    const count = this.publicUploadLimits.get(key) ?? 0;
     if (count >= limit) return false;
-    this.uploadLimits.set(key, count + 1);
+    this.publicUploadLimits.set(key, count + 1);
     return true;
   }
   recordSubmission(tokenId: string, results: ApiUploadResult[], context: UploadRequestContext, uploadedAt: string) {
@@ -113,7 +113,7 @@ class MemoryUploadAccessRepository implements UploadAccessRepository {
 }
 
 function createAccess(repository = new MemoryUploadAccessRepository()) {
-  return { repository, access: new UploadAccess(repository, { applicationDailyLimit: 2, uploadRequestsPerMinute: 2 }) };
+  return { repository, access: new UploadAccess(repository, { applicationDailyLimit: 2, publicUploadRequestsPerMinute: 2 }) };
 }
 
 describe("UploadAccess", () => {
@@ -156,5 +156,13 @@ describe("UploadAccess", () => {
     access.apply(input, "ip-c");
     access.apply(input, "ip-c");
     expect(() => access.apply(input, "ip-c")).toThrow(UploadAccessError);
+  });
+
+  test("rate limits anonymous public uploads independently from member credentials", () => {
+    const { access } = createAccess();
+    expect(access.consumePublicUploadRateLimit("ip-public", new Date("2026-07-22T08:00:01Z"))).toBeTrue();
+    expect(access.consumePublicUploadRateLimit("ip-public", new Date("2026-07-22T08:00:30Z"))).toBeTrue();
+    expect(access.consumePublicUploadRateLimit("ip-public", new Date("2026-07-22T08:00:59Z"))).toBeFalse();
+    expect(access.consumePublicUploadRateLimit("ip-public", new Date("2026-07-22T08:01:00Z"))).toBeTrue();
   });
 });

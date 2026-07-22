@@ -38,10 +38,14 @@ describe("SqliteDatabase migrations", () => {
     expect(token?.request_count).toBe(7);
     expect(token?.accepted_file_count).toBe(1);
     expect(token?.accepted_bytes).toBe(123);
-    expect(migrated.raw.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(1);
+    expect(migrated.raw.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(2);
     expect(migrated.raw.query<{ name: string }, [string]>("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get("api_token_applications")?.name).toBe("api_token_applications");
+    expect(migrated.raw.query<{ name: string }, [string]>("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get("public_font_upload_rate_limits")?.name).toBe("public_font_upload_rate_limits");
 
-    new SqliteUploadAccessRepository(migrated).revokeToken("t1");
+    const access = new SqliteUploadAccessRepository(migrated);
+    expect(access.consumePublicUploadRateLimit("ip-a", "2026-07-22T08:00", 1)).toBeTrue();
+    expect(access.consumePublicUploadRateLimit("ip-a", "2026-07-22T08:00", 1)).toBeFalse();
+    access.revokeToken("t1");
     expect(migrated.raw.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM api_upload_history").get()?.count).toBe(1);
     migrated.close();
   });

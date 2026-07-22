@@ -9,7 +9,7 @@ export interface SubmittedFont {
 
 export interface UploadAccessPort {
   authenticate(plaintext: string): ApiTokenRecord | null;
-  consumeUploadRateLimit(tokenId: string): boolean;
+  consumePublicUploadRateLimit(ipHash: string): boolean;
   recordSubmission(tokenId: string, results: ApiUploadResult[], context: UploadRequestContext): void;
 }
 
@@ -40,16 +40,40 @@ export class FontSubmission {
     private readonly options: FontSubmissionOptions,
   ) {}
 
-  async submit(input: { credential: string; files: SubmittedFont[]; context: UploadRequestContext }): Promise<ApiUploadResponse> {
+  async submitPublic(input: {
+    files: SubmittedFont[];
+    context: UploadRequestContext;
+    rateLimitKey: string;
+  }): Promise<ApiUploadResponse> {
+    this.validatePublicBatch(input.files);
+    if (!this.access.consumePublicUploadRateLimit(input.rateLimitKey)) {
+      throw new FontSubmissionError("Public upload request rate limit exceeded", "rate_limited");
+    }
+    return this.contribute(input.files);
+  }
+
+  async submitCredentialed(input: {
+    credential: string;
+    files: SubmittedFont[];
+    context: UploadRequestContext;
+  }): Promise<ApiUploadResponse> {
     const token = this.access.authenticate(input.credential.trim());
     if (!token) throw new FontSubmissionError("Invalid or inactive upload credential", "invalid_token");
     if (!input.files.length) throw new FontSubmissionError("No font files provided", "empty");
-    if (input.files.length > this.options.maxFiles) {
+
+    const response = await this.contribute(input.files);
+    this.access.recordSubmission(token.id, response.results, input.context);
+    return response;
+  }
+
+  private validatePublicBatch(files: SubmittedFont[]): void {
+    if (!files.length) throw new FontSubmissionError("No font files provided", "empty");
+    if (files.length > this.options.maxFiles) {
       throw new FontSubmissionError(`Too many files (max ${this.options.maxFiles})`, "too_many_files");
     }
 
     let batchBytes = 0;
-    for (const file of input.files) {
+    for (const file of files) {
       if (file.bytes.byteLength > this.options.maxFileBytes) {
         throw new FontSubmissionError(`${file.filename} exceeds the per-file upload limit`, "file_too_large");
       }
@@ -58,19 +82,17 @@ export class FontSubmission {
     if (batchBytes > this.options.maxBatchBytes) {
       throw new FontSubmissionError("Upload batch exceeds the total size limit", "batch_too_large");
     }
-    if (!this.access.consumeUploadRateLimit(token.id)) {
-      throw new FontSubmissionError("Upload request rate limit exceeded", "rate_limited");
-    }
+  }
 
-    const results: ApiUploadResult[] = new Array(input.files.length);
+  private async contribute(files: SubmittedFont[]): Promise<ApiUploadResponse> {
+    const results: ApiUploadResult[] = new Array(files.length);
     const concurrency = Math.max(1, this.options.concurrency);
-    for (let offset = 0; offset < input.files.length; offset += concurrency) {
-      const chunk = input.files.slice(offset, offset + concurrency);
+    for (let offset = 0; offset < files.length; offset += concurrency) {
+      const chunk = files.slice(offset, offset + concurrency);
       const settled = await Promise.all(chunk.map((file) => this.submitOne(file)));
       settled.forEach((result, index) => { results[offset + index] = result; });
     }
 
-    this.access.recordSubmission(token.id, results, input.context);
     return {
       summary: {
         accepted: results.filter((result) => result.status === "success").length,

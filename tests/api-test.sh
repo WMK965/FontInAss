@@ -324,8 +324,8 @@ fi
 
 rm -f "$SAMPLE_ASS" "$SAMPLE_ASS2"
 
-# ── 16. Upload Access ───────────────────────────────────────────────────────
-section "16. Upload Access — Apply, Review, Claim, Upload, Revoke"
+# ── 16. Font Access ─────────────────────────────────────────────────────────
+section "16. Public Upload + Reviewed Subtitle-group Access"
 
 api POST "/api/token-applications" -H "Content-Type: application/json" \
   -d '{"applicant_name":"API smoke test","contact":"ops@example.invalid","purpose":"Verify the production font upload access workflow"}'
@@ -348,13 +348,23 @@ TOKEN_ID=$(echo "$HTTP_BODY" | python3 -c 'import sys,json; print(json.load(sys.
 
 api GET "/api/v1/whoami" -H "Authorization: Bearer ${UPLOAD_TOKEN}"
 assert_status "200" "Claimed upload credential authenticates"
+api GET "/api/access/whoami" -H "X-API-Key: ${UPLOAD_TOKEN}"
+assert_status "200" "Credential authenticates for the font workspace"
+assert_body_contains '"member"' "Workspace reports member role"
+api GET "/api/fonts?page=1&limit=1&search=" -H "X-API-Key: ${UPLOAD_TOKEN}"
+assert_status "200" "Member credential can list indexed fonts"
+api GET "/api/fonts/stats" -H "X-API-Key: ${UPLOAD_TOKEN}"
+assert_status "401" "Member credential cannot access admin index controls"
 
 SAMPLE_FONT="fonts/CatCat-Fonts/FZCKJF.ttf"
 if [[ -f "$SAMPLE_FONT" ]]; then
   api POST "/api/v1/upload" -H "Authorization: Bearer ${UPLOAD_TOKEN}" -F "file=@${SAMPLE_FONT};filename=deployment-smoke.ttf"
   assert_status "200" "Credential upload accepts or deduplicates a valid font"
+  api POST "/api/upload" -F "file=@${SAMPLE_FONT};filename=public-deployment-smoke.ttf"
+  assert_status "200" "Anonymous public upload accepts or deduplicates a valid font"
 else
   log_skip "Credential upload valid font (sample font not found)"
+  log_skip "Public upload valid font (sample font not found)"
 fi
 
 FAKE_FONT=$(mktemp --suffix=.ttf)
@@ -372,7 +382,7 @@ api GET "/api/v1/whoami" -H "Authorization: Bearer ${UPLOAD_TOKEN}"
 assert_status "401" "Revoked credential stops immediately"
 
 api POST "/api/upload"
-assert_status "404" "Anonymous font upload route is removed"
+assert_status "400" "Public font upload route requires at least one font"
 
 # ── 17. Logs ────────────────────────────────────────────────────────────────
 section "17. Processing Logs"

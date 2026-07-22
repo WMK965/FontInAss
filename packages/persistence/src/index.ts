@@ -146,6 +146,13 @@ CREATE TABLE IF NOT EXISTS api_token_rate_limits (
   PRIMARY KEY(token_id, minute_bucket)
 );
 
+CREATE TABLE IF NOT EXISTS public_font_upload_rate_limits (
+  ip_hash TEXT NOT NULL,
+  minute_bucket TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY(ip_hash, minute_bucket)
+);
+
 CREATE TABLE IF NOT EXISTS api_upload_history (
   id TEXT PRIMARY KEY,
   token_id TEXT NOT NULL REFERENCES api_tokens(id) ON DELETE CASCADE,
@@ -182,7 +189,7 @@ CREATE TABLE IF NOT EXISTS resolved_fonts (
 );
 `;
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 function migrate(database: Database): void {
   const current = database.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
@@ -753,16 +760,16 @@ export class SqliteUploadAccessRepository implements UploadAccessRepository {
     })();
   }
 
-  consumeUploadRateLimit(tokenId: string, minute: string, limit: number): boolean {
+  consumePublicUploadRateLimit(ipHash: string, minute: string, limit: number): boolean {
     return this.database.raw.transaction(() => {
       const current = this.database.raw.query<{ count: number }, [string, string]>(
-        "SELECT count FROM api_token_rate_limits WHERE token_id = ? AND minute_bucket = ?",
-      ).get(tokenId, minute)?.count ?? 0;
+        "SELECT count FROM public_font_upload_rate_limits WHERE ip_hash = ? AND minute_bucket = ?",
+      ).get(ipHash, minute)?.count ?? 0;
       if (current >= limit) return false;
       this.database.raw.query(`
-        INSERT INTO api_token_rate_limits (token_id, minute_bucket, count) VALUES (?, ?, 1)
-        ON CONFLICT(token_id, minute_bucket) DO UPDATE SET count = count + 1
-      `).run(tokenId, minute);
+        INSERT INTO public_font_upload_rate_limits (ip_hash, minute_bucket, count) VALUES (?, ?, 1)
+        ON CONFLICT(ip_hash, minute_bucket) DO UPDATE SET count = count + 1
+      `).run(ipHash, minute);
       return true;
     })();
   }

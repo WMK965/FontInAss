@@ -22,8 +22,8 @@
 
 | 方法 | 路径 | 认证 | 用途 |
 | --- | --- | --- | --- |
-| GET | `/api/fonts/` | Master key | 分页查询字体 |
-| POST | `/api/fonts/` | Master key | 管理员上传字体 |
+| GET | `/api/fonts/` | Member credential / Master key | 分页查询字体 |
+| POST | `/api/fonts/` | Member credential / Master key | 字幕组或管理员后台上传字体，不套用公开投稿限制 |
 | DELETE | `/api/fonts/` | Master key | 批量删除字体 |
 | GET | `/api/fonts/stats` | Master key | 索引统计 |
 | GET | `/api/fonts/browse` | Master key | 浏览本地字体目录 |
@@ -32,7 +32,7 @@
 | POST | `/api/fonts/scan` | Master key | 全量重扫并清理孤儿索引 |
 | GET | `/api/fonts/duplicates` | Master key | 查询重复字体 |
 | POST | `/api/fonts/deduplicate` | Master key | 删除重复字体 |
-| GET | `/api/fonts/:id/download` | Master key | 下载字体 |
+| GET | `/api/fonts/:id/download` | Member credential / Master key | 下载字体 |
 | DELETE | `/api/fonts/:id` | Master key | 删除单个字体 |
 
 ## 字幕处理
@@ -69,32 +69,35 @@
 | POST | `/api/activity/missing-fonts/resolve` | Master key | 标记已解决 |
 | POST | `/api/activity/missing-fonts/unresolve` | Master key | 取消已解决 |
 
-## API token
+## 字幕组凭证
 
 | 方法 | 路径 | 认证 | 用途 |
 | --- | --- | --- | --- |
-| GET | `/api/tokens/` | Master key | token 列表 |
-| POST | `/api/tokens/` | Master key | 签发 token |
-| GET | `/api/tokens/stats` | Master key | token 统计 |
+| GET | `/api/tokens/` | Master key | 字幕组凭证列表 |
+| POST | `/api/tokens/` | Master key | 签发字幕组凭证 |
+| GET | `/api/tokens/stats` | Master key | 凭证统计 |
 | GET | `/api/tokens/history` | Master key | 全部上传历史 |
 | GET | `/api/tokens/applications` | Master key | 上传权限申请列表 |
 | POST | `/api/tokens/applications/:id/review` | Master key | 批准或驳回申请 |
-| PATCH | `/api/tokens/:id` | Master key | 修改 token |
-| DELETE | `/api/tokens/:id` | Master key | 软吊销 token，保留审计历史 |
-| GET | `/api/tokens/:id/history` | Master key | 单 token 上传历史 |
+| PATCH | `/api/tokens/:id` | Master key | 修改凭证 |
+| DELETE | `/api/tokens/:id` | Master key | 软吊销凭证，保留审计历史 |
+| GET | `/api/tokens/:id/history` | Master key | 单凭证上传历史 |
 
-## 上传权限申请与字体投稿
+## 字幕组访问申请与两类字体上传
 
 | 方法 | 路径 | 认证 | 用途 |
 | --- | --- | --- | --- |
-| POST | `/api/token-applications` | 公共、按 IP 限流 | 创建上传权限申请并返回一次性申请凭证 |
+| GET | `/api/access/whoami` | Member credential / Master key | 验证后台身份并返回角色 |
+| POST | `/api/token-applications` | 公共、按 IP 限流 | 创建字幕组后台权限申请并返回一次性申请凭证 |
 | GET | `/api/token-applications/:id` | Application secret | 查询自己的申请状态 |
-| POST | `/api/token-applications/:id/claim` | Application secret | 领取已批准的上传凭证 |
-| POST | `/api/v1/upload` | Upload credential | 网页与第三方程序统一字体上传 |
-| GET | `/api/v1/whoami` | Upload credential | 验证凭证与读取精确计数 |
-| GET | `/api/v1/history` | Upload credential | 读取自己的上传历史 |
+| POST | `/api/token-applications/:id/claim` | Application secret | 领取已批准的字幕组凭证 |
+| GET | `/api/upload/policy` | 公共 | 读取公开投稿文件数、大小与速率限制 |
+| POST | `/api/upload` | 公共、按 IP 限流 | 匿名公开字体投稿，执行公开限制 |
+| POST | `/api/v1/upload` | Member credential | 字幕组程序化上传，不套用公开投稿限制 |
+| GET | `/api/v1/whoami` | Member credential | 验证凭证与读取精确计数 |
+| GET | `/api/v1/history` | Member credential | 读取自己的上传历史 |
 
-旧匿名 `POST /api/upload` 已删除；网页不再拥有绕过凭证审计的上传路径。
+公开 `/upload` 与字幕组 `/fonts`/`/api/v1/upload` 是两条独立路径。字幕组凭证不能调用删除、索引维护、分享审核或凭证管理端点。
 
 ## 客户端约束
 

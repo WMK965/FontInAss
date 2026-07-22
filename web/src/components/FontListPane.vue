@@ -10,6 +10,8 @@ import KBadge from "./KBadge.vue";
 import KEmpty from "./KEmpty.vue";
 import { formatBytes } from "../lib/format";
 
+const props = withDefaults(defineProps<{ canDelete?: boolean }>(), { canDelete: true });
+
 const { t } = useI18n();
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -234,7 +236,7 @@ onBeforeUnmount(() => {
         >
           <Download v-if="!batchDownloading" class="w-3.5 h-3.5" />{{ t('downloadSelectedFonts') }}
         </KButton>
-        <KButton v-if="selectedIds.size > 0" variant="danger" size="sm" :disabled="batchDownloading" @click="deleteSelected">
+        <KButton v-if="props.canDelete && selectedIds.size > 0" variant="danger" size="sm" :disabled="batchDownloading" @click="deleteSelected">
           <Trash2 class="w-3.5 h-3.5" />{{ selectedIds.size }} {{ t('selected') }}
         </KButton>
         <KButton variant="ghost" size="sm" @click="loadFontList(true)">
@@ -287,6 +289,7 @@ onBeforeUnmount(() => {
           </button>
 
           <button
+            v-if="props.canDelete"
             class="w-7 h-7 rounded-lg flex items-center justify-center text-ink-400 hover:text-rose-500 hover:bg-rose-50 transition-colors shrink-0"
             :aria-label="t('delete')"
             @click.stop="deleteSingle(font.id)"

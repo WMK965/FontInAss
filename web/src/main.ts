@@ -23,6 +23,7 @@ const router = createRouter({
     { path: "/", component: () => import("./views/HomeView.vue") },
     { path: "/subset", component: () => import("./views/SubsetView.vue") },
     { path: "/upload", component: () => import("./views/UploadView.vue") },
+    { path: "/access", component: () => import("./views/AccessView.vue") },
     { path: "/fonts", component: () => import("./views/FontsView.vue") },
     { path: "/sharing", component: () => import("./views/SharingView.vue") },
     { path: "/cli", component: () => import("./views/CliView.vue") },
@@ -33,4 +34,3 @@ const router = createRouter({
 });
 
 createApp(App).use(i18n).use(router).mount("#app");
-

@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { CheckCircle2, KeyRound, Shield, Trash2, X } from "lucide-vue-next";
-import { clearApiKey, getApiKey, setApiKey } from "../api/client";
+import { clearApiKey, getApiKey, setApiKey, verifyFontAccess } from "../api/client";
 import AuthKeyField from "./AuthKeyField.vue";
 import KButton from "./KButton.vue";
 
@@ -20,6 +20,7 @@ const { t } = useI18n();
 const keyInput = ref("");
 const fieldRef = ref<InstanceType<typeof AuthKeyField> | null>(null);
 const saved = ref(false);
+const saving = ref(false);
 const error = ref("");
 
 const hasStoredKey = computed(() => !!getApiKey());
@@ -31,21 +32,29 @@ const close = () => {
   error.value = "";
 };
 
-const save = () => {
+const save = async () => {
   const key = keyInput.value.trim();
   if (!key) {
     error.value = t("authKeyRequired");
     fieldRef.value?.focus();
     return;
   }
-  setApiKey(key);
-  saved.value = true;
+  saving.value = true;
   error.value = "";
-  emit("saved");
-  window.setTimeout(() => {
-    saved.value = false;
-    close();
-  }, 700);
+  try {
+    await verifyFontAccess(key);
+    setApiKey(key);
+    saved.value = true;
+    emit("saved");
+    window.setTimeout(() => {
+      saved.value = false;
+      close();
+    }, 700);
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    saving.value = false;
+  }
 };
 
 const clear = () => {
@@ -159,7 +168,8 @@ watch(
                   variant="primary"
                   size="md"
                   class="min-w-[7rem]"
-                  :disabled="saved || (!isDirty && hasStoredKey && !keyInput.trim())"
+                  :loading="saving"
+                  :disabled="saved || saving || !keyInput.trim() || (!isDirty && hasStoredKey)"
                   @click="save"
                 >
                   <CheckCircle2 v-if="saved" class="h-4 w-4" />

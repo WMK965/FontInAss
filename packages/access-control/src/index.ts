@@ -47,7 +47,7 @@ export interface UploadAccessRepository {
   claimApplication(id: string, token: ApiTokenRecord, claimedAt: string): { application: ApiTokenApplicationRecord; token: ApiTokenRecord } | null;
 
   consumeApplicationRateLimit(ipHash: string, date: string, limit: number): boolean;
-  consumeUploadRateLimit(tokenId: string, minute: string, limit: number): boolean;
+  consumePublicUploadRateLimit(ipHash: string, minute: string, limit: number): boolean;
   recordSubmission(tokenId: string, results: ApiUploadResult[], context: UploadRequestContext, uploadedAt: string): void;
   listHistory(query: { tokenId?: string; status?: ApiUploadStatus; page: number; limit: number }): ApiHistoryResponse;
   stats(): ApiTokenStats;
@@ -55,7 +55,7 @@ export interface UploadAccessRepository {
 
 export interface UploadAccessOptions {
   applicationDailyLimit: number;
-  uploadRequestsPerMinute: number;
+  publicUploadRequestsPerMinute: number;
 }
 
 export type UploadAccessErrorCode = "not_found" | "invalid_secret" | "invalid_state" | "rate_limited" | "conflict";
@@ -178,8 +178,12 @@ export class UploadAccess {
     return { application: toApplicationView(claimed.application), token: toTokenView(claimed.token), plaintext: secret };
   }
 
-  consumeUploadRateLimit(tokenId: string, now = new Date()): boolean {
-    return this.repository.consumeUploadRateLimit(tokenId, now.toISOString().slice(0, 16), this.options.uploadRequestsPerMinute);
+  consumePublicUploadRateLimit(ipHash: string, now = new Date()): boolean {
+    return this.repository.consumePublicUploadRateLimit(
+      ipHash,
+      now.toISOString().slice(0, 16),
+      this.options.publicUploadRequestsPerMinute,
+    );
   }
 
   recordSubmission(tokenId: string, results: ApiUploadResult[], context: UploadRequestContext): void {

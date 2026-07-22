@@ -22,5 +22,11 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 export default {
   port: container.config.port,
   fetch: app.fetch,
-  maxRequestBodySize: Math.max(container.config.uploadMaxBatchSize, container.config.archiveMaxFileSize) + 2 * 1024 * 1024,
+  // Public submissions have strict product limits. Trusted member/admin uploads are
+  // intentionally outside that policy, with only a high operational body ceiling.
+  maxRequestBodySize: Math.max(
+    container.config.publicUploadMaxBatchSize,
+    container.config.archiveMaxFileSize,
+    2 * 1024 * 1024 * 1024,
+  ) + 2 * 1024 * 1024,
 };

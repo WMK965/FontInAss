@@ -85,6 +85,7 @@ const onEscape = (e: KeyboardEvent) => {
 const keyModalOpen = ref(false);
 const hasKey = ref(!!getApiKey());
 const syncHasKey = () => { hasKey.value = !!getApiKey(); };
+const handleKeySaved = () => { syncHasKey(); void router.push("/fonts"); };
 const openKeyModal = () => { keyModalOpen.value = true; };
 const closeKeyModal = () => { keyModalOpen.value = false; };
 
@@ -138,6 +139,7 @@ const titleKeys: Record<string, string> = {
   "/about": "pageTitle_about",
   "/comments": "pageTitle_comments",
   "/upload": "pageTitle_upload",
+  "/access": "pageTitle_access",
 };
 watchEffect(() => {
   const key = titleKeys[route.path];
@@ -346,7 +348,7 @@ watchEffect(() => {
     </footer>
   </div>
 
-  <AuthKeyModal v-model:open="keyModalOpen" @saved="syncHasKey" @cleared="syncHasKey" />
+  <AuthKeyModal v-model:open="keyModalOpen" @saved="handleKeySaved" @cleared="syncHasKey" />
 
   <!-- ─── Mobile Settings panel (bottom sheet) ── -->
   <transition name="modal">

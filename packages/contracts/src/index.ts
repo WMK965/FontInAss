@@ -461,6 +461,21 @@ export const ApiTokenStatsSchema = z.object({
 });
 export type ApiTokenStats = z.infer<typeof ApiTokenStatsSchema>;
 
+export const FontAccessSessionSchema = z.object({
+  role: z.enum(["admin", "member"]),
+  name: z.string(),
+  prefix: z.string().nullable(),
+});
+export type FontAccessSession = z.infer<typeof FontAccessSessionSchema>;
+
+export const PublicFontUploadPolicySchema = z.object({
+  max_files: z.number().int().positive(),
+  max_file_bytes: z.number().int().positive(),
+  max_batch_bytes: z.number().int().positive(),
+  requests_per_minute: z.number().int().positive(),
+});
+export type PublicFontUploadPolicy = z.infer<typeof PublicFontUploadPolicySchema>;
+
 export const ApiUploadResultSchema = z.object({
   filename: z.string(),
   status: ApiUploadStatusSchema,
@@ -486,5 +501,5 @@ export const WhoAmIResponseSchema = ApiTokenSchema.pick({
   accepted_bytes: true,
   last_used_at: true,
   expires_at: true,
-});
+}).extend({ role: z.literal("member") });
 export type WhoAmIResponse = z.infer<typeof WhoAmIResponseSchema>;

@@ -53,13 +53,13 @@ export function createContainer(config = loadRuntimeConfig()): AppContainer {
   );
   const uploadAccess = new UploadAccess(new SqliteUploadAccessRepository(database), {
     applicationDailyLimit: config.tokenApplicationDailyLimit,
-    uploadRequestsPerMinute: config.uploadRequestsPerMinute,
+    publicUploadRequestsPerMinute: config.publicUploadRequestsPerMinute,
   });
   const submissions = new FontSubmission(uploadAccess, fonts, {
     targetDirectory: config.uploadTargetDirectory,
-    maxFiles: config.uploadMaxFiles,
-    maxFileBytes: config.uploadMaxFileSize,
-    maxBatchBytes: config.uploadMaxBatchSize,
+    maxFiles: config.publicUploadMaxFiles,
+    maxFileBytes: config.publicUploadMaxFileSize,
+    maxBatchBytes: config.publicUploadMaxBatchSize,
     concurrency: config.subsetConcurrency,
   });
   const activity = new ActivityLog(new SqliteActivityRepository(database));

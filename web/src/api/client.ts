@@ -19,6 +19,7 @@ import type {
   BrowseResponse,
   DedupResponse,
   DuplicateGroup,
+  FontAccessSession,
   FontItem,
   FontListResponse,
   FontStats,
@@ -27,6 +28,7 @@ import type {
   MissingFontRanking,
   ProcessingLog,
   ProcessingLogList,
+  PublicFontUploadPolicy,
   ScanFontsResponse,
   SharedArchive,
   SubsetOptions,
@@ -51,6 +53,7 @@ export type {
   BrowseResponse,
   DedupResponse,
   DuplicateGroup,
+  FontAccessSession,
   FontItem,
   FontListResponse,
   FontStats,
@@ -59,6 +62,7 @@ export type {
   MissingFontRanking,
   ProcessingLog,
   ProcessingLogList,
+  PublicFontUploadPolicy,
   ScanFontsResponse,
   SharedArchive,
   UploadResult,
@@ -95,6 +99,12 @@ function authHeaders(): Record<string, string> {
   return key ? { "X-API-Key": key } : {};
 }
 
+export async function verifyFontAccess(key = getApiKey()): Promise<FontAccessSession> {
+  const normalized = key.trim();
+  if (!normalized) throw new Error("Access key is required");
+  return json(await fetch(manualUrl("/api/access/whoami"), { headers: { "X-API-Key": normalized } }));
+}
+
 async function json<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const body = await response.json().catch(() => ({})) as { error?: string };
@@ -120,6 +130,19 @@ export async function uploadFonts(files: File[], targetDir?: string, onProgress?
     onProgress?.(index + 1, files.length);
   }
   return results;
+}
+
+export async function getPublicFontUploadPolicy(): Promise<PublicFontUploadPolicy> {
+  return json(await fetch(manualUrl("/api/upload/policy")));
+}
+
+export async function uploadFontsPublic(files: File[]): Promise<ApiUploadResponse> {
+  const form = new FormData();
+  files.forEach((file) => form.append("file", file));
+  const response = await fetch(manualUrl("/api/upload"), { method: "POST", body: form });
+  const body = await response.json().catch(() => ({})) as Partial<ApiUploadResponse> & { error?: string };
+  if (Array.isArray(body.results) && body.summary) return body as ApiUploadResponse;
+  throw new Error(body.error ?? `HTTP ${response.status}`);
 }
 
 export async function deleteFont(id: string): Promise<void> {

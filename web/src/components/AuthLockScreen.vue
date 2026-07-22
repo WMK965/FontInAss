@@ -2,7 +2,7 @@
 import { nextTick, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { KeyRound, ShieldCheck } from "lucide-vue-next";
-import { setApiKey } from "../api/client";
+import { setApiKey, verifyFontAccess, type FontAccessSession } from "../api/client";
 import AuthKeyField from "./AuthKeyField.vue";
 import KButton from "./KButton.vue";
 
@@ -13,7 +13,7 @@ withDefaults(defineProps<{
 }>(), {});
 
 const emit = defineEmits<{
-  unlocked: [key: string];
+  unlocked: [session: FontAccessSession];
 }>();
 
 const { t } = useI18n();
@@ -32,8 +32,11 @@ const unlock = async () => {
   submitting.value = true;
   error.value = "";
   try {
+    const session = await verifyFontAccess(key);
     setApiKey(key);
-    emit("unlocked", key);
+    emit("unlocked", session);
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : String(cause);
   } finally {
     submitting.value = false;
   }
@@ -88,6 +91,13 @@ onMounted(async () => {
             {{ hint ?? t('lockHint', { apiKey: 'API_KEY', envFile: '.env' }) }}
           </p>
         </div>
+
+        <p class="mt-4 text-center text-xs text-ink-400">
+          {{ t('memberAccessNeedCredential') }}
+          <RouterLink to="/access" class="font-medium text-sakura-500 hover:text-sakura-600">
+            {{ t('memberAccessApplyLink') }}
+          </RouterLink>
+        </p>
       </div>
     </div>
   </div>

@@ -14,7 +14,7 @@ class FakeAccess implements UploadAccessPort {
   allowed = true;
 
   authenticate(plaintext: string) { return plaintext === "valid" ? token : null; }
-  consumeUploadRateLimit() { return this.allowed; }
+  consumePublicUploadRateLimit() { return this.allowed; }
   recordSubmission(tokenId: string, results: ApiUploadResult[], context: UploadRequestContext) {
     this.recorded = { tokenId, results, context };
   }
@@ -35,9 +35,9 @@ function createSubmission(access = new FakeAccess()) {
 }
 
 describe("FontSubmission", () => {
-  test("authenticates, contributes and records one batch through its interface", async () => {
+  test("authenticates member submissions, contributes and records one batch through its interface", async () => {
     const { access, submission } = createSubmission();
-    const result = await submission.submit({
+    const result = await submission.submitCredentialed({
       credential: "valid",
       files: [
         { filename: "fresh.ttf", bytes: new Uint8Array(4) },
@@ -51,21 +51,31 @@ describe("FontSubmission", () => {
     expect(access.recorded?.results).toHaveLength(2);
   });
 
-  test("enforces credential, file and batch limits before contribution", async () => {
+  test("keeps member uploads outside public file and batch limits", async () => {
     const { submission } = createSubmission();
-    await expect(submission.submit({ credential: "invalid", files: [{ filename: "a.ttf", bytes: new Uint8Array(1) }], context: { clientIp: null, userAgent: null } }))
+    await expect(submission.submitCredentialed({ credential: "invalid", files: [{ filename: "a.ttf", bytes: new Uint8Array(1) }], context: { clientIp: null, userAgent: null } }))
       .rejects.toMatchObject({ code: "invalid_token" } satisfies Partial<FontSubmissionError>);
-    await expect(submission.submit({ credential: "valid", files: [{ filename: "a.ttf", bytes: new Uint8Array(11) }], context: { clientIp: null, userAgent: null } }))
-      .rejects.toMatchObject({ code: "file_too_large" } satisfies Partial<FontSubmissionError>);
-    await expect(submission.submit({ credential: "valid", files: [
+    const result = await submission.submitCredentialed({ credential: "valid", files: [
       { filename: "a.ttf", bytes: new Uint8Array(8) }, { filename: "b.ttf", bytes: new Uint8Array(8) },
-    ], context: { clientIp: null, userAgent: null } })).rejects.toMatchObject({ code: "batch_too_large" } satisfies Partial<FontSubmissionError>);
+      { filename: "c.ttf", bytes: new Uint8Array(11) },
+    ], context: { clientIp: null, userAgent: null } });
+    expect(result.results).toHaveLength(3);
   });
 
-  test("returns rate-limit errors without recording a submission", async () => {
+  test("enforces file, batch and IP rate limits only for public submissions", async () => {
     const { access, submission } = createSubmission();
+    await expect(submission.submitPublic({
+      rateLimitKey: "ip-a", files: [{ filename: "a.ttf", bytes: new Uint8Array(11) }], context: { clientIp: null, userAgent: null },
+    })).rejects.toMatchObject({ code: "file_too_large" } satisfies Partial<FontSubmissionError>);
+    await expect(submission.submitPublic({
+      rateLimitKey: "ip-a", files: [
+        { filename: "a.ttf", bytes: new Uint8Array(8) }, { filename: "b.ttf", bytes: new Uint8Array(8) },
+      ], context: { clientIp: null, userAgent: null },
+    })).rejects.toMatchObject({ code: "batch_too_large" } satisfies Partial<FontSubmissionError>);
     access.allowed = false;
-    await expect(submission.submit({ credential: "valid", files: [{ filename: "a.ttf", bytes: new Uint8Array(1) }], context: { clientIp: null, userAgent: null } }))
+    await expect(submission.submitPublic({
+      rateLimitKey: "ip-a", files: [{ filename: "a.ttf", bytes: new Uint8Array(1) }], context: { clientIp: null, userAgent: null },
+    }))
       .rejects.toMatchObject({ code: "rate_limited" } satisfies Partial<FontSubmissionError>);
     expect(access.recorded).toBeNull();
   });

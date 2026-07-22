@@ -186,7 +186,7 @@ bun run check
 
 后续重构将原本分散在 `TokenManager`、Hono 路由和 `FontCatalog.uploadByToken()` 中的行为收敛为两个深模块：
 
-- `UploadAccess`：申请状态机、一次性申请凭证、管理员审核、领取、签发、验证、过期、软吊销、速率桶和审计计数。
-- `FontSubmission`：凭证鉴权、文件数/单文件/批次限制、受控并发、字体验证、SHA-256 去重、安全存储命名、结果归一化和批次审计。
+- `UploadAccess`：字幕组申请状态机、一次性申请凭证、管理员审核、领取、签发、验证、过期、软吊销、公开 IP 速率桶和凭证审计计数。
+- `FontSubmission`：公开受限投稿与字幕组凭证投稿共享字体验证、SHA-256 去重、安全存储命名、结果归一化和受控并发；只有公开路径执行文件数、单文件、批次与频率限制。
 
-网页 `/upload` 与第三方程序只调用 `POST /api/v1/upload`。匿名 `POST /api/upload` 被直接删除，不提供兼容路径。SQLite 使用 `PRAGMA user_version` 执行版本化迁移，已发布 v2 表中的旧计数会迁入 `request_count`、`accepted_file_count` 和 `accepted_bytes`，上传历史在软吊销后继续保留。
+网页 `/upload` 调用匿名受限的 `POST /api/upload`；审核后的字幕组凭证可进入 `/fonts` 查看、下载和后台上传字体，也可调用不受公开投稿策略约束的 `POST /api/v1/upload`。删除、索引维护和凭证审核仍只接受 Master key。SQLite 使用 `PRAGMA user_version` 执行版本化迁移，已发布 v2 表中的旧计数会迁入 `request_count`、`accepted_file_count` 和 `accepted_bytes`，上传历史在软吊销后继续保留。
