@@ -30,13 +30,8 @@ const LANG_OPTIONS = ["chs", "cht", "jpn", "chs_jpn", "cht_jpn", "sc", "tc", "en
 const SEASON_OPTIONS = ["S1", "S2", "S3", "S4", "Movie", "SPs", "OVA", "合集"];
 
 // ── Parsed fields ─────────────────────────────────────────────────────────────
-const langs = computed<string[]>(() => {
-  try { return JSON.parse(props.archive.languages); } catch { return []; }
-});
-
-const fmts = computed<string[]>(() => {
-  try { return JSON.parse(props.archive.subtitle_format); } catch { return []; }
-});
+const langs = computed<string[]>(() => props.archive.languages);
+const fmts = computed<string[]>(() => props.archive.subtitle_formats);
 
 const relativeTime = computed(() => {
   if (!props.archive.created_at) return "";
@@ -116,7 +111,7 @@ watch(() => props.archive, (a) => {
     letter: a.letter,
     season: a.season,
     sub_group: a.sub_group,
-    languages: (() => { try { return JSON.parse(a.languages); } catch { return []; } })(),
+    languages: [...a.languages],
     has_fonts: !!a.has_fonts,
   };
 });

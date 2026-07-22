@@ -1,0 +1,356 @@
+import { createHash } from "node:crypto";
+import { resolve } from "node:path";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
+import { compress } from "hono/compress";
+import { cors } from "hono/cors";
+import { serveStatic } from "hono/bun";
+import { zValidator } from "@hono/zod-validator";
+import { z } from "zod";
+import {
+  ApiHistoryQuerySchema,
+  ArchiveMetadataSchema,
+  ArchivePatchSchema,
+  BrowseQuerySchema,
+  CODE,
+  CreateApiTokenSchema,
+  DeleteFontsRequestSchema,
+  FontKeysQuerySchema,
+  FontListQuerySchema,
+  IdParamSchema,
+  IndexFontsRequestSchema,
+  MissingFontMutationSchema,
+  ProcessingLogQuerySchema,
+  SubsetOptionsSchema,
+  UpdateApiTokenSchema,
+  type ApiUploadStatus,
+  type SubsetOptions,
+} from "@fontinass/contracts";
+import { ArchiveLibraryError } from "@fontinass/archive-library";
+import { extractUploadToken } from "@fontinass/access-control";
+import { fontMimeType } from "@fontinass/font-catalog";
+import type { AppContainer } from "./container.js";
+import { masterKeyMatches } from "./runtime.js";
+
+export function createApp(container: AppContainer) {
+  const admin = adminMiddleware(container);
+
+  const fontRoutes = new Hono()
+    .use("*", admin)
+    .get("/stats", (c) => c.json(container.fonts.stats()))
+    .get("/browse", zValidator("query", BrowseQuerySchema), (c) => c.json(container.fonts.browse(c.req.valid("query").prefix)))
+    .get("/keys", zValidator("query", FontKeysQuerySchema), (c) => {
+      const query = c.req.valid("query");
+      const all = container.fonts.listKeys(query.prefix);
+      const page = all.slice(query.cursor, query.cursor + query.limit);
+      const next = query.cursor + page.length;
+      return c.json({ keys: page, nextCursor: next >= all.length ? null : String(next), done: next >= all.length });
+    })
+    .post("/index", zValidator("json", IndexFontsRequestSchema), async (c) => {
+      const input = c.req.valid("json");
+      return c.json(await container.fonts.indexKeys({ prefix: input.prefix, keys: input.keys, batchSize: input.batch_size }));
+    })
+    .post("/scan", async (c) => c.json(await container.fonts.scan()))
+    .get("/duplicates", async (c) => {
+      const groups = await container.fonts.findDuplicates();
+      return c.json({ groups, total: groups.length });
+    })
+    .post("/deduplicate", async (c) => c.json(await container.fonts.deduplicate()))
+    .get("/", zValidator("query", FontListQuerySchema), (c) => c.json(container.fonts.list(c.req.valid("query"))))
+    .post("/", async (c) => {
+      const form = await c.req.formData();
+      const files = form.getAll("file").filter((entry): entry is File => entry instanceof File);
+      if (!files.length) return c.json({ error: "No files provided. Use field name 'file'" }, 400);
+      const targetDirectory = c.req.header("x-target-dir") ?? "";
+      const results = [];
+      for (const file of files) results.push(await container.fonts.upload(file.name, new Uint8Array(await file.arrayBuffer()), targetDirectory));
+      return c.json({ results }, results.some((result) => !result.error) ? 200 : 400);
+    })
+    .delete("/", zValidator("json", DeleteFontsRequestSchema), async (c) => c.json({ deleted: await container.fonts.delete(c.req.valid("json").ids) }))
+    .get("/:id/download", zValidator("param", IdParamSchema), async (c) => {
+      const file = await container.fonts.download(c.req.valid("param").id);
+      if (!file) return c.json({ error: "Font not found" }, 404);
+      return new Response(Buffer.from(file.bytes), { headers: {
+        "Content-Type": fontMimeType(file.filename),
+        "Content-Disposition": contentDisposition(file.filename),
+        "Content-Length": String(file.bytes.byteLength),
+        "Cache-Control": "private, max-age=3600",
+      } });
+    })
+    .delete("/:id", zValidator("param", IdParamSchema), async (c) => {
+      const deleted = await container.fonts.delete([c.req.valid("param").id]);
+      return deleted ? c.json({ ok: true as const }) : c.json({ error: "Font not found" }, 404);
+    });
+
+  const subsetRoutes = new Hono().post("/", async (c) => {
+    const startedAt = Date.now();
+    const options = subsetOptionsFromHeaders(c);
+    const files: Array<{ name: string; bytes: Uint8Array }> = [];
+    if ((c.req.header("content-type") ?? "").includes("multipart/form-data")) {
+      const form = await c.req.formData();
+      const entries = form.getAll("file").filter((entry): entry is File => entry instanceof File);
+      if (entries.length > 100) return binarySubsetResponse(CODE.CLIENT_ERROR, ["Too many files (max 100)"], null);
+      for (const file of entries) files.push({ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+    } else {
+      files.push({ name: decodeHeader(c.req.header("x-filename")) || "subtitle.ass", bytes: new Uint8Array(await c.req.arrayBuffer()) });
+    }
+    if (!files.length) return binarySubsetResponse(CODE.CLIENT_ERROR, ["No file provided"], null);
+    const clientIp = hashClientIp(c);
+    const processOne = async (file: { name: string; bytes: Uint8Array }) => {
+      const started = Date.now();
+      const result = await container.subtitles.process({ filename: file.name, bytes: file.bytes, options });
+      container.activity.record({
+        filename: file.name, clientIp, code: result.code, messages: result.messages,
+        missingFonts: missingFonts(result.messages), fontCount: 0, fileSize: file.bytes.byteLength, elapsedMs: Date.now() - started,
+      });
+      return result;
+    };
+    if (files.length === 1) {
+      try {
+        const result = await processOne(files[0]);
+        return binarySubsetResponse(result.code, result.messages, result.data);
+      } catch (error) {
+        container.logger.error("[subset] unhandled processing error", error);
+        return binarySubsetResponse(CODE.SERVER_ERROR, ["Internal server error"], null);
+      }
+    }
+    const results: Array<{ filename: string; code: number; messages: string[]; data: string | null }> = [];
+    for (let offset = 0; offset < files.length; offset += container.config.subsetConcurrency) {
+      const chunk = files.slice(offset, offset + container.config.subsetConcurrency);
+      const settled = await Promise.allSettled(chunk.map(processOne));
+      settled.forEach((item, index) => {
+        if (item.status === "fulfilled") results.push({ filename: chunk[index].name, code: item.value.code, messages: item.value.messages, data: item.value.data ? Buffer.from(item.value.data).toString("base64") : null });
+        else results.push({ filename: chunk[index].name, code: CODE.SERVER_ERROR, messages: ["Internal server error"], data: null });
+      });
+    }
+    container.logger.info(`[subset] batch=${files.length} elapsed=${Date.now() - startedAt}ms`);
+    return c.json({ results }, results.some((result) => result.code >= 400) ? 207 : 200);
+  });
+
+  const archiveRoutes = new Hono()
+    .get("/", (c) => c.json(container.archives.listPublished(), 200, { "Cache-Control": "public, max-age=60" }))
+    .get("/:id/download", zValidator("param", IdParamSchema), (c) => {
+      const archive = container.archives.listPublished().find((item) => item.id === c.req.valid("param").id);
+      return archive?.download_url ? c.redirect(archive.download_url, 302) : c.json({ error: "Archive not found" }, 404);
+    })
+    .post("/contribute", async (c) => {
+      try {
+        const { file, metadata } = await archiveForm(c);
+        const archive = await container.archives.contribute({ filename: file.name, bytes: new Uint8Array(await file.arrayBuffer()), metadata }, hashClientIp(c));
+        return c.json({ id: archive.id, status: archive.status, message: "Submitted for review" }, 201);
+      } catch (error) { return archiveError(c, error); }
+    })
+    .use("/*", admin)
+    .get("/pending", (c) => c.json(container.archives.listPending()))
+    .post("/upload", async (c) => {
+      try {
+        const { file, metadata } = await archiveForm(c);
+        const archive = await container.archives.publish({ filename: file.name, bytes: new Uint8Array(await file.arrayBuffer()), metadata });
+        return c.json({ id: archive.id, status: archive.status, filename: archive.filename, download_url: archive.download_url }, 201);
+      } catch (error) { return archiveError(c, error); }
+    })
+    .post("/:id/approve", zValidator("param", IdParamSchema), async (c) => {
+      try { const archive = await container.archives.approve(c.req.valid("param").id); return c.json({ id: archive.id, status: archive.status, download_url: archive.download_url }); }
+      catch (error) { return archiveError(c, error); }
+    })
+    .post("/:id/reject", zValidator("param", IdParamSchema), async (c) => {
+      try { const archive = await container.archives.reject(c.req.valid("param").id); return c.json({ id: archive.id, status: archive.status }); }
+      catch (error) { return archiveError(c, error); }
+    })
+    .put("/:id", zValidator("param", IdParamSchema), zValidator("json", ArchivePatchSchema), async (c) => {
+      try { return c.json(await container.archives.edit(c.req.valid("param").id, c.req.valid("json"))); }
+      catch (error) { return archiveError(c, error); }
+    })
+    .delete("/:id", zValidator("param", IdParamSchema), async (c) => {
+      try { await container.archives.remove(c.req.valid("param").id); return c.json({ ok: true as const }); }
+      catch (error) { return archiveError(c, error); }
+    })
+    .get("/:id/preview", zValidator("param", IdParamSchema), async (c) => {
+      try { return c.json(await container.archives.preview(c.req.valid("param").id)); }
+      catch (error) { return archiveError(c, error); }
+    })
+    .get("/:id/file", zValidator("param", IdParamSchema), async (c) => {
+      try {
+        const file = await container.archives.download(c.req.valid("param").id);
+        return new Response(Buffer.from(file.bytes), { headers: { "Content-Type": "application/octet-stream", "Content-Disposition": contentDisposition(file.filename), "Content-Length": String(file.bytes.byteLength) } });
+      } catch (error) { return archiveError(c, error); }
+    });
+
+  const activityRoutes = new Hono()
+    .get("/", zValidator("query", ProcessingLogQuerySchema), (c) => c.json(container.activity.list(c.req.valid("query"))))
+    .get("/missing-fonts", zValidator("query", z.object({ limit: z.coerce.number().int().min(1).max(100).default(50), show_resolved: z.enum(["true", "false"]).default("false") })), (c) => {
+      const query = c.req.valid("query");
+      return c.json(container.activity.missingFonts(query.limit, query.show_resolved === "true"));
+    })
+    .get("/stats", (c) => c.json(container.activity.stats()))
+    .post("/missing-fonts/resolve", admin, zValidator("json", MissingFontMutationSchema), (c) => {
+      const font_name = c.req.valid("json").font_name; container.activity.resolve(font_name); return c.json({ ok: true as const, font_name });
+    })
+    .post("/missing-fonts/unresolve", admin, zValidator("json", MissingFontMutationSchema), (c) => {
+      const font_name = c.req.valid("json").font_name; container.activity.unresolve(font_name); return c.json({ ok: true as const, font_name });
+    });
+
+  const tokenRoutes = new Hono()
+    .use("*", admin)
+    .get("/", (c) => c.json({ data: container.tokens.list() }))
+    .get("/stats", (c) => c.json(container.tokens.stats()))
+    .get("/history", zValidator("query", ApiHistoryQuerySchema), (c) => c.json(container.tokens.history(c.req.valid("query"))))
+    .post("/", zValidator("json", CreateApiTokenSchema), (c) => c.json(container.tokens.create(c.req.valid("json")), 201))
+    .patch("/:id", zValidator("param", IdParamSchema), zValidator("json", UpdateApiTokenSchema), (c) => {
+      const token = container.tokens.update(c.req.valid("param").id, c.req.valid("json"));
+      return token ? c.json({ token }) : c.json({ error: "Token not found" }, 404);
+    })
+    .delete("/:id", zValidator("param", IdParamSchema), (c) => container.tokens.delete(c.req.valid("param").id) ? c.json({ ok: true as const }) : c.json({ error: "Token not found" }, 404))
+    .get("/:id/history", zValidator("param", IdParamSchema), zValidator("query", ApiHistoryQuerySchema), (c) => {
+      const token = container.tokens.find(c.req.valid("param").id);
+      if (!token) return c.json({ error: "Token not found" }, 404);
+      return c.json({ token, ...container.tokens.history({ ...c.req.valid("query"), tokenId: token.id }) });
+    });
+
+  const publicUpload = new Hono().post("/", async (c) => {
+    const form = await c.req.formData();
+    const files = form.getAll("file").filter((entry): entry is File => entry instanceof File);
+    if (!files.length) return c.json({ error: "No files provided. Use field name 'file'" }, 400);
+    const results = [];
+    for (const file of files) results.push(await container.fonts.upload(file.name, new Uint8Array(await file.arrayBuffer()), container.config.uploadTargetDirectory));
+    return c.json({ results }, results.some((result) => !result.error) ? 200 : 400);
+  });
+
+  const programUpload = new Hono()
+    .get("/whoami", (c) => {
+      const plaintext = extractUploadToken(c.req.header("x-upload-token"), c.req.header("authorization"));
+      const token = plaintext ? container.tokens.verify(plaintext) : null;
+      return token ? c.json({ id: token.id, name: token.name, prefix: token.prefix, upload_count: token.upload_count, total_bytes: token.total_bytes, last_used_at: token.last_used_at }) : c.json({ error: "Invalid or missing token" }, 401);
+    })
+    .post("/upload", async (c) => {
+      const plaintext = extractUploadToken(c.req.header("x-upload-token"), c.req.header("authorization"));
+      const token = plaintext ? container.tokens.verify(plaintext) : null;
+      if (!token) return c.json({ error: "Invalid or missing upload token" }, 401);
+      const form = await c.req.formData();
+      const files = form.getAll("file").filter((entry): entry is File => entry instanceof File);
+      if (!files.length) return c.json({ error: "No files provided. Use field name 'file'" }, 400);
+      const clientIp = requestIp(c);
+      const userAgent = c.req.header("user-agent") ?? null;
+      const results: Array<{ filename: string; status: ApiUploadStatus; id: string; faces: number; size: number; sha256?: string; error?: string }> = [];
+      let acceptedBytes = 0;
+      for (const file of files) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const validation = container.fonts.validate(file.name, bytes);
+        if (!validation.valid) {
+          const result = { filename: file.name, status: "rejected" as const, id: "", faces: 0, size: bytes.byteLength, error: validation.error ?? "Invalid font" };
+          results.push(result);
+          container.tokens.recordUpload({ token_id: token.id, font_file_id: null, filename: file.name, size: bytes.byteLength, sha256: null, status: result.status, error: result.error, client_ip: clientIp, user_agent: userAgent });
+          continue;
+        }
+        try {
+          const uploaded = await container.fonts.uploadByToken(file.name, bytes, container.config.uploadTargetDirectory);
+          results.push({ filename: file.name, status: uploaded.status, id: uploaded.id, faces: uploaded.faces, size: bytes.byteLength, sha256: uploaded.sha256 });
+          container.tokens.recordUpload({ token_id: token.id, font_file_id: uploaded.id, filename: file.name, size: bytes.byteLength, sha256: uploaded.sha256, status: uploaded.status, error: null, client_ip: clientIp, user_agent: userAgent });
+          acceptedBytes += bytes.byteLength;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          results.push({ filename: file.name, status: "error", id: "", faces: 0, size: bytes.byteLength, error: message });
+          container.tokens.recordUpload({ token_id: token.id, font_file_id: null, filename: file.name, size: bytes.byteLength, sha256: null, status: "error", error: message, client_ip: clientIp, user_agent: userAgent });
+        }
+      }
+      if (results.some((result) => result.status === "success" || result.status === "duplicate")) container.tokens.markUsed(token.id, acceptedBytes, clientIp);
+      const summary = { accepted: results.filter((result) => result.status === "success").length, duplicate: results.filter((result) => result.status === "duplicate").length, rejected: results.filter((result) => result.status === "rejected").length, error: results.filter((result) => result.status === "error").length };
+      return c.json({ summary, results }, summary.accepted || summary.duplicate ? 200 : summary.rejected ? 400 : 500);
+    });
+
+  const api = new Hono()
+    .get("/health", admin, (c) => {
+      try { container.database.ping(); return c.json({ status: "ok" as const, version: 2 as const }, 200, { "Cache-Control": "no-store" }); }
+      catch { return c.json({ status: "error" as const, version: 2 as const }, 500); }
+    })
+    .route("/fonts", fontRoutes)
+    .route("/subset", subsetRoutes)
+    .route("/archives", archiveRoutes)
+    .route("/activity", activityRoutes)
+    .route("/tokens", tokenRoutes)
+    .route("/upload", publicUpload)
+    .route("/v1", programUpload);
+
+  const app = new Hono()
+    .use("*", async (c, next) => { const start = Date.now(); await next(); container.logger.debug(`${c.req.method} ${c.req.path} ${c.res.status} ${Date.now() - start}ms`); })
+    .use("*", cors({ origin: container.config.corsOrigin, allowHeaders: ["*"], allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], exposeHeaders: ["X-Code", "X-Message", "Content-Disposition"] }))
+    .use("*", compress())
+    .route("/api", api);
+
+  app.use("/assets/*", serveStatic({ root: "../web/dist" }));
+  app.use("/*", serveStatic({ root: "../web/dist" }));
+  app.get("*", async (c) => {
+    if (c.req.path.startsWith("/api/")) return c.json({ error: "Not found" }, 404);
+    const file = Bun.file(resolve(import.meta.dir, "../../web/dist/index.html"));
+    return await file.exists() ? new Response(file, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=0, s-maxage=300" } }) : c.text("Not found", 404);
+  });
+  app.onError((error, c) => { container.logger.error(`[http] ${c.req.method} ${c.req.path}`, error); return c.json({ error: "Internal server error" }, 500); });
+  return app;
+}
+
+export type AppType = ReturnType<typeof createApp>;
+
+function adminMiddleware(container: AppContainer): MiddlewareHandler {
+  return async (c, next) => {
+    const bearer = c.req.header("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
+    if (!masterKeyMatches(container.config.apiKey, c.req.header("x-api-key") ?? bearer)) return c.json({ error: "Unauthorized" }, 401);
+    await next();
+  };
+}
+
+function subsetOptionsFromHeaders(c: Context): SubsetOptions {
+  return SubsetOptionsSchema.parse({
+    fontsCheck: c.req.header("x-fonts-check") === "1",
+    clearFonts: c.req.header("x-clear-fonts") === "1",
+    fontNameMode: c.req.header("x-font-name-mode") === "preserve" ? "preserve" : "alias",
+    fontAliasSalt: decodeHeader(c.req.header("x-font-alias-salt")),
+    srtFormat: decodeHeader(c.req.header("x-srt-format")),
+    srtStyle: decodeHeader(c.req.header("x-srt-style")),
+  });
+}
+
+function binarySubsetResponse(code: number, messages: string[], data: Uint8Array | null): Response {
+  return new Response(data ? Buffer.from(data) : null, { status: code >= 500 ? 500 : 200, headers: {
+    "Content-Type": "application/octet-stream", "X-Code": String(code), "X-Message": Buffer.from(JSON.stringify(messages)).toString("base64"),
+  } });
+}
+
+async function archiveForm(c: Context) {
+  const form = await c.req.formData();
+  const file = form.get("file");
+  const rawMetadata = form.get("metadata");
+  if (!(file instanceof File) || typeof rawMetadata !== "string") throw new ArchiveLibraryError("Missing file or metadata", "invalid");
+  if (rawMetadata.length > 8192) throw new ArchiveLibraryError("Metadata is too large", "invalid");
+  return { file, metadata: ArchiveMetadataSchema.parse(JSON.parse(rawMetadata)) };
+}
+
+function archiveError(c: Context, error: unknown) {
+  if (error instanceof z.ZodError) return c.json({ error: "Invalid metadata", issues: error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })) }, 400);
+  if (error instanceof ArchiveLibraryError) {
+    const status = error.code === "not_found" ? 404 : error.code === "rate_limited" ? 429 : error.code === "storage_unavailable" ? 503 : 400;
+    return c.json({ error: error.message }, status);
+  }
+  throw error;
+}
+
+function decodeHeader(value?: string): string {
+  if (!value) return "";
+  try { return Buffer.from(value, "base64").toString("utf8"); } catch { return value; }
+}
+
+function contentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_").trim() || "file";
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
+function requestIp(c: Context): string | null {
+  return c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? c.req.header("x-real-ip") ?? null;
+}
+
+function hashClientIp(c: Context): string {
+  const ip = requestIp(c) ?? "unknown";
+  return ip === "unknown" ? ip : createHash("sha256").update(ip).digest("hex").slice(0, 12);
+}
+
+function missingFonts(messages: string[]): string[] {
+  return messages.filter((message) => message.startsWith("Missing font:")).map((message) => message.replace(/^Missing font:\s*\[?|\]?$/g, ""));
+}

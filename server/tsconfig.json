@@ -5,9 +5,8 @@
     "moduleResolution": "bundler",
     "strict": true,
     "skipLibCheck": true,
-    "outDir": "dist",
-    "rootDir": "src",
-    "types": ["bun-types"]
+    "noEmit": true,
+    "types": ["bun"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/index.ts", "src/app.ts", "src/container.ts", "src/runtime.ts", "scripts/**/*.ts"]
 }

@@ -3,13 +3,14 @@ name: Release CLI
 on:
   push:
     tags:
+      - "v*"
       - "cli-v*"
     paths:
       - "cli/**"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. cli-v0.1.0). Leave empty to build without releasing."
+        description: "Release tag (e.g. v2.0.0 or cli-v2.0.0). Leave empty to build without releasing."
         required: false
 
 permissions:
@@ -76,7 +77,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/cli-v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/cli-v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4

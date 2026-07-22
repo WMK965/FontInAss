@@ -21,14 +21,6 @@ defineEmits<{
   delete: [];
 }>();
 
-function parseLangs(json: string): string[] {
-  try { return JSON.parse(json); } catch { return []; }
-}
-
-function parseFmts(json: string): string[] {
-  try { return JSON.parse(json); } catch { return []; }
-}
-
 const iconBgClass = props.variant === "search" ? "bg-sky-50" : "bg-sakura-50";
 const iconTextClass = props.variant === "search" ? "text-sky-400" : "text-sakura-400";
 </script>
@@ -54,10 +46,10 @@ const iconTextClass = props.variant === "search" ? "text-sky-400" : "text-sakura
           <span v-if="variant === 'default' && archive.episode_count" class="text-xs text-ink-400">
             {{ archive.episode_count }} {{ t('sharingEpisodes') }}
           </span>
-          <KBadge v-if="variant === 'default'" v-for="fmt in parseFmts(archive.subtitle_format)" :key="fmt" variant="default" class="text-[10px]">
+          <KBadge v-if="variant === 'default'" v-for="fmt in archive.subtitle_formats" :key="fmt" variant="default" class="text-[10px]">
             {{ fmt }}
           </KBadge>
-          <KBadge v-for="lang in parseLangs(archive.languages)" :key="lang" variant="sky" class="text-[10px]">
+          <KBadge v-for="lang in archive.languages" :key="lang" variant="sky" class="text-[10px]">
             {{ lang }}
           </KBadge>
           <KBadge v-if="variant === 'default' && archive.has_fonts" variant="success" class="text-[10px]">

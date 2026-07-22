@@ -15,9 +15,8 @@ server/fonts/
 server/data/
 data/
 
-# Bun lock (let Docker install fresh)
+# Legacy Bun lock format
 **/bun.lockb
-bun.lock
 
 # Environment files (secrets)
 .env

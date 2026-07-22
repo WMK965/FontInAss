@@ -1,47 +1,40 @@
-# ─── Build stage: frontend ────────────────────────────────────────────────────
-FROM oven/bun:1 AS web-builder
+FROM oven/bun:1.3.14 AS builder
 
-WORKDIR /build/web
-COPY web/package.json ./
-RUN bun install
+WORKDIR /build
+COPY package.json bun.lock ./
+COPY packages ./packages
+COPY server/package.json server/package.json
+COPY web/package.json web/package.json
+RUN bun install --frozen-lockfile
 
-COPY web/ .
-# Skip vue-tsc type-checking in Docker (checked locally); just bundle
-RUN bun run vite build
+COPY server ./server
+COPY web ./web
+RUN bun run --cwd web build
+RUN bun run --cwd server build
 
-# ─── Runtime stage ────────────────────────────────────────────────────────────
-FROM oven/bun:1 AS runtime
+FROM oven/bun:1.3.14 AS runtime
 
-# Install p7zip for 7z archive support (used by archive-utils.ts)
-RUN apt-get update -qq && apt-get install -y --no-install-recommends p7zip-full && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -qq \
+  && apt-get install -y --no-install-recommends p7zip-full \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/server
-
-# Install server dependencies
-COPY server/package.json ./
-RUN bun install
-
-# Copy server source
-COPY server/src ./src
-
-# Copy built frontend from web-builder
-COPY --from=web-builder /build/web/dist ../web/dist
-
-# Create default directories
+COPY --from=builder /build/server/dist ./dist
+COPY --from=builder /build/web/dist /app/web/dist
 RUN mkdir -p /app/fonts /app/data
 
-# Environment defaults (override via docker-compose or --env-file)
 ENV PORT=3000 \
     FONT_DIR=/app/fonts \
-    DB_PATH=/app/data/fonts.db \
+    DB_PATH=/app/data/fontinass-v2.db \
+    PENDING_DIR=/app/data/pending-v2 \
+    LOG_DIR=/app/data/logs \
     CORS_ORIGIN=* \
     SUBSET_CONCURRENCY=5 \
     CACHE_MAX_ENTRIES=500 \
     LOG_LEVEL=info
 
 EXPOSE 3000
-
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-  CMD bun -e "const h=process.env.API_KEY?{'X-API-Key':process.env.API_KEY}:{};const r=await fetch('http://localhost:3000/api/health',{headers:h});if(!r.ok)process.exit(1)" || exit 1
+  CMD bun -e "const h=process.env.API_KEY?{'X-API-Key':process.env.API_KEY}:{};const r=await fetch('http://localhost:3000/api/health',{headers:h});if(!r.ok)process.exit(1);const j=await r.json();if(j.version!==2)process.exit(1)" || exit 1
 
-CMD ["bun", "src/index.ts"]
+CMD ["bun", "dist/index.js"]

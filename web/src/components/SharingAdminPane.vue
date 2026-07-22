@@ -3,12 +3,12 @@ import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   Clock, RefreshCcw, FileArchive, Upload, X,
-  DatabaseZap, Loader2, ChevronDown, CheckCheck, XOctagon,
+  ChevronDown, CheckCheck, XOctagon,
   Inbox, CloudUpload, Folder,
 } from "lucide-vue-next";
 import {
   listPendingArchives, uploadSharedArchive,
-  approveArchive, rejectArchive, importIndexSSE,
+  approveArchive, rejectArchive,
 } from "../api/client";
 import type { SharedArchive } from "../api/client";
 import { useConfirm } from "../composables/useConfirm";
@@ -270,38 +270,6 @@ async function sharingSubmitUpload() {
   }
 }
 
-// ─── Import Index ─────────────────────────────────────────────────────────────
-
-interface ImportProgress {
-  phase: string;
-  message?: string;
-  current?: number;
-  total?: number;
-  name?: string;
-  imported?: number;
-  skipped?: number;
-  errors?: number;
-  elapsed?: string;
-}
-const importOpen = ref(false);
-const sharingImportProgress = ref<ImportProgress>({ phase: "idle" });
-const sharingIsImporting = ref(false);
-
-const importPercent = computed(() => {
-  const p = sharingImportProgress.value;
-  if (!p.current || !p.total) return 0;
-  return Math.round((p.current / p.total) * 100);
-});
-
-function sharingStartImport() {
-  sharingIsImporting.value = true;
-  sharingImportProgress.value = { phase: "index", message: "Starting import..." };
-  importIndexSSE(
-    (data) => { sharingImportProgress.value = data; },
-    () => { sharingIsImporting.value = false; loadPending(false); },
-    (err) => { sharingIsImporting.value = false; sharingImportProgress.value = { phase: "error", message: err }; useConfirm().alert({ title: t('errorTitle'), message: err, variant: 'danger' }); },
-  );
-}
 </script>
 
 <template>
@@ -540,72 +508,6 @@ function sharingStartImport() {
       </Transition>
     </section>
 
-    <!-- ═══ Import Index (collapsible) ═══ -->
-    <section class="card overflow-hidden">
-      <button
-        @click="importOpen = !importOpen"
-        class="w-full flex items-center gap-3 px-5 py-3.5 hover:bg-ink-50/60 transition-colors duration-150"
-      >
-        <DatabaseZap class="w-4 h-4 text-sky-500 shrink-0" />
-        <div class="flex-1 text-left min-w-0">
-          <h3 class="font-display font-semibold text-ink-800 text-sm">{{ t('sharingImportIndex') }}</h3>
-          <p class="text-[11px] text-ink-400 mt-0.5 truncate">{{ t('sharingImportIndexDesc') }}</p>
-        </div>
-        <ChevronDown
-          class="w-4 h-4 text-ink-400 shrink-0 transition-transform duration-200"
-          :class="importOpen && 'rotate-180'"
-        />
-      </button>
-
-      <Transition name="slide-down">
-        <div v-if="importOpen" class="px-5 pb-5 pt-4 border-t border-ink-100 flex flex-col gap-3">
-          <KButton
-            variant="secondary"
-            size="sm"
-            class="w-fit"
-            :disabled="sharingIsImporting"
-            @click="sharingStartImport"
-          >
-            <Loader2 v-if="sharingIsImporting" class="w-3.5 h-3.5 animate-spin" />
-            <DatabaseZap v-else class="w-3.5 h-3.5" />
-            {{ sharingIsImporting ? t('sharingImporting') : t('sharingImportIndex') }}
-          </KButton>
-
-          <div v-if="sharingImportProgress.phase !== 'idle'" class="rounded-xl bg-ink-50/80 px-4 py-3 text-sm text-ink-600 flex flex-col gap-2">
-            <p v-if="sharingImportProgress.message" class="text-xs text-ink-500">{{ sharingImportProgress.message }}</p>
-
-            <!-- Progress bar -->
-            <div v-if="sharingImportProgress.current != null" class="flex flex-col gap-1.5">
-              <div class="flex items-center justify-between text-xs">
-                <span class="text-ink-400 truncate" :title="sharingImportProgress.name">
-                  {{ sharingImportProgress.name || '' }}
-                </span>
-                <span class="font-mono text-ink-500 shrink-0 ml-2">
-                  {{ sharingImportProgress.current }} / {{ sharingImportProgress.total }}
-                </span>
-              </div>
-              <div class="h-1.5 rounded-full bg-ink-200/60 overflow-hidden">
-                <div
-                  class="h-full bg-gradient-to-r from-sky-400 to-sky-500 transition-[width] duration-300"
-                  :style="{ width: `${importPercent}%` }"
-                />
-              </div>
-            </div>
-
-            <p v-if="sharingImportProgress.phase === 'done'" class="text-mint-600 font-medium text-xs">
-              ✓ {{ t('sharingImportDone') }}:
-              {{ sharingImportProgress.imported }} imported,
-              {{ sharingImportProgress.skipped }} skipped,
-              {{ sharingImportProgress.errors }} errors
-              ({{ sharingImportProgress.elapsed }})
-            </p>
-            <p v-if="sharingImportProgress.phase === 'error'" class="text-rose-500 font-medium text-xs">
-              ✗ {{ sharingImportProgress.message }}
-            </p>
-          </div>
-        </div>
-      </Transition>
-    </section>
   </div>
 </template>
 

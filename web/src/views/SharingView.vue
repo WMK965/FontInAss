@@ -80,9 +80,7 @@ const grouped = computed(() => {
     let seasonList = g.seasons.get(a.season);
     if (!seasonList) { seasonList = []; g.seasons.set(a.season, seasonList); }
     seasonList.push(a);
-    if (!g.subEntries && a.sub_entries) {
-      try { g.subEntries = JSON.parse(a.sub_entries); } catch { /* ignore */ }
-    }
+    if (!g.subEntries && a.sub_entries.length) g.subEntries = a.sub_entries;
   }
   return tree;
 });
@@ -198,7 +196,7 @@ async function loadArchives() {
         id: a.id,
         name_cn: a.name_cn,
         sub_group: a.sub_group,
-        languages: (() => { try { return JSON.parse(a.languages).join(" "); } catch { return ""; } })(),
+        languages: a.languages.join(" "),
         season: a.season,
         letter: a.letter,
       }))

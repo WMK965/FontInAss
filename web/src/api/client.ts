@@ -1,851 +1,231 @@
-/**
- * API client for the FontInAss Local backend.
- */
+import { hc } from "hono/client";
+import type { AppType } from "@fontinass/server/app";
+import type {
+  ApiHistoryResponse,
+  ApiToken,
+  ApiTokenStats,
+  ApiUploadHistoryItem,
+  ApiUploadStatus,
+  ArchiveMetadata,
+  ArchivePatch,
+  ArchivePreview,
+  BrowseFile,
+  BrowseResponse,
+  DedupResponse,
+  DuplicateGroup,
+  FontItem,
+  FontListResponse,
+  FontStats,
+  IndexFontsResponse,
+  LogStats,
+  MissingFontRanking,
+  ProcessingLog,
+  ProcessingLogList,
+  ScanFontsResponse,
+  SharedArchive,
+  SubsetOptions,
+  UploadResult,
+} from "@fontinass/contracts";
 
-const BASE = (import.meta as unknown as { env: { VITE_API_BASE_URL?: string } }).env.VITE_API_BASE_URL || "";
+export type {
+  ApiHistoryResponse,
+  ApiToken,
+  ApiTokenStats,
+  ApiUploadHistoryItem,
+  ApiUploadStatus,
+  ArchivePreview,
+  BrowseFile,
+  BrowseResponse,
+  DedupResponse,
+  DuplicateGroup,
+  FontItem,
+  FontListResponse,
+  FontStats,
+  IndexFontsResponse,
+  LogStats,
+  MissingFontRanking,
+  ProcessingLog,
+  ProcessingLogList,
+  ScanFontsResponse,
+  SharedArchive,
+  UploadResult,
+};
+export type ScanLocalResult = ScanFontsResponse;
+export type IndexFolderResponse = IndexFontsResponse;
 
-// ─── API Key management ───────────────────────────────────────────────────────
-
+const configuredBase = (import.meta as unknown as { env: { VITE_API_BASE_URL?: string } }).env.VITE_API_BASE_URL?.replace(/\/+$/, "") ?? "";
+const origin = configuredBase || window.location.origin;
+const api = hc<AppType>(origin).api;
 const KEY_STORAGE = "fontinass_api_key";
 
-export function getApiKey(): string {
-  return localStorage.getItem(KEY_STORAGE) ?? "";
-}
-
-export function setApiKey(key: string): void {
-  if (key) {
-    localStorage.setItem(KEY_STORAGE, key);
-  } else {
-    localStorage.removeItem(KEY_STORAGE);
-  }
-}
-
-export function clearApiKey(): void {
-  localStorage.removeItem(KEY_STORAGE);
-}
+export function getApiKey(): string { return localStorage.getItem(KEY_STORAGE) ?? ""; }
+export function setApiKey(key: string): void { if (key) localStorage.setItem(KEY_STORAGE, key); else localStorage.removeItem(KEY_STORAGE); }
+export function clearApiKey(): void { localStorage.removeItem(KEY_STORAGE); }
 
 function authHeaders(): Record<string, string> {
   const key = getApiKey();
   return key ? { "X-API-Key": key } : {};
 }
 
-function base64Encode(str: string): string {
-  return btoa(unescape(encodeURIComponent(str)));
-}
-
-function base64Decode(b64: string): string {
-  return new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0)));
-}
-
-function filenameFromContentDisposition(value: string | null, fallback: string): string {
-  if (!value) return fallback;
-
-  const encoded = value.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
-  if (encoded) {
-    try {
-      return decodeURIComponent(encoded);
-    } catch {
-      return encoded;
-    }
+async function json<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${response.status}`);
   }
-
-  const quoted = value.match(/filename="([^"]+)"/i)?.[1];
-  if (quoted) return quoted;
-
-  return value.match(/filename=([^;]+)/i)?.[1]?.trim() || fallback;
+  return response.json() as Promise<T>;
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export interface FontItem {
-  id: string;
-  filename: string;
-  size: number;
-  created_at: string;
-  names: string;
-  weight: number;
-  bold: number;
-  italic: number;
-}
-
-export interface FontListResponse {
-  total: number;
-  page: number;
-  limit: number;
-  data: FontItem[];
-}
-
-export interface UploadResult {
-  filename: string;
-  id: string;
-  faces: number;
-  error?: string;
-}
-
-export interface BrowseFile {
-  key: string;
-  name: string;
-  size: number;
-  indexed: boolean;
-}
-
-export interface BrowseResponse {
-  folders: string[];
-  files: BrowseFile[];
-  cursor: string | null;
-  done: boolean;
-}
-
-export interface IndexFolderResponse {
-  indexed: number;
-  skipped: number;
-  errors: string[];
-  nextCursor: string | null;
-  done: boolean;
-}
-
-export interface ListKeysResponse {
-  keys: { key: string; size: number }[];
-  nextCursor: string | null;
-  done: boolean;
-}
-
-export interface SubsetOptions {
-  fontsCheck?: boolean;
-  clearFonts?: boolean;
-  fontNameMode?: "preserve" | "alias";
-  fontAliasSalt?: string;
-  srtFormat?: string;
-  srtStyle?: string;
-  signal?: AbortSignal;
-}
-
-export interface SubsetFileResult {
-  code: number;
-  messages: string[];
-  data: Uint8Array | null;
-}
-
-// ─── Fonts API ────────────────────────────────────────────────────────────────
+function manualUrl(path: string): string { return `${configuredBase}${path}`; }
 
 export async function listFonts(page = 1, limit = 50, search = ""): Promise<FontListResponse> {
-  const params = new URLSearchParams({ page: String(page), limit: String(limit) });
-  if (search) params.set("search", search);
-  const res = await fetch(`${BASE}/api/fonts?${params}`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  return json(await api.fonts.$get({ query: { page, limit, search } }, { headers: authHeaders() }));
 }
 
-/**
- * Upload fonts sequentially (one per POST) to avoid CF Workers 100 MB body limit.
- * `onProgress(done, total)` is called after each successful/failed upload.
- */
-export async function uploadFonts(
-  files: File[],
-  targetDir?: string,
-  onProgress?: (done: number, total: number) => void,
-): Promise<UploadResult[]> {
+export async function uploadFonts(files: File[], targetDir?: string, onProgress?: (done: number, total: number) => void): Promise<UploadResult[]> {
   const results: UploadResult[] = [];
-  for (let i = 0; i < files.length; i++) {
-    const f = files[i];
+  for (let index = 0; index < files.length; index++) {
     const form = new FormData();
-    form.append("file", f);
-    const extraHeaders: Record<string, string> = {};
-    if (targetDir) {
-      const dir = targetDir.trim().replace(/\/?$/, "/");
-      extraHeaders["X-Target-Dir"] = dir;
-    }
-    try {
-      const res = await fetch(`${BASE}/api/fonts`, {
-        method: "POST",
-        headers: { ...authHeaders(), ...extraHeaders },
-        body: form,
-      });
-      if (!res.ok) {
-        // Parse error body — server may return { error } or { results: [{error}] }
-        const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-        const errMsg = (body.error as string) || `Upload failed (HTTP ${res.status})`;
-        results.push({ filename: f.name, id: "", faces: 0, error: errMsg });
-      } else {
-        const json = await res.json() as { results: UploadResult[] };
-        results.push(...(json.results ?? []));
-      }
-    } catch (e) {
-      results.push({ filename: f.name, id: "", faces: 0, error: String(e) });
-    }
-    onProgress?.(i + 1, files.length);
+    form.append("file", files[index]);
+    const response = await fetch(manualUrl("/api/fonts"), { method: "POST", headers: { ...authHeaders(), ...(targetDir ? { "X-Target-Dir": targetDir } : {}) }, body: form });
+    if (response.ok) results.push(...(await response.json() as { results: UploadResult[] }).results);
+    else results.push({ filename: files[index].name, id: "", faces: 0, error: (await response.json().catch(() => ({})) as { error?: string }).error ?? `HTTP ${response.status}` });
+    onProgress?.(index + 1, files.length);
   }
   return results;
 }
 
-/**
- * Public font upload — no API key required.
- * Calls POST /api/upload with strict server-side validation.
- */
-export async function uploadFontsPublic(
-  files: File[],
-  onProgress?: (done: number, total: number) => void,
-): Promise<UploadResult[]> {
+export async function uploadFontsPublic(files: File[], onProgress?: (done: number, total: number) => void): Promise<UploadResult[]> {
   const results: UploadResult[] = [];
-  for (let i = 0; i < files.length; i++) {
-    const f = files[i];
-    const form = new FormData();
-    form.append("file", f);
-    try {
-      const res = await fetch(`${BASE}/api/upload`, {
-        method: "POST",
-        body: form,
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-        const errMsg = (body.error as string) || `Upload failed (HTTP ${res.status})`;
-        results.push({ filename: f.name, id: "", faces: 0, error: errMsg });
-      } else {
-        const json = await res.json() as { results: UploadResult[] };
-        results.push(...(json.results ?? []));
-      }
-    } catch (e) {
-      results.push({ filename: f.name, id: "", faces: 0, error: String(e) });
-    }
-    onProgress?.(i + 1, files.length);
+  for (let index = 0; index < files.length; index++) {
+    const form = new FormData(); form.append("file", files[index]);
+    const response = await fetch(manualUrl("/api/upload"), { method: "POST", body: form });
+    if (response.ok) results.push(...(await response.json() as { results: UploadResult[] }).results);
+    else results.push({ filename: files[index].name, id: "", faces: 0, error: (await response.json().catch(() => ({})) as { error?: string }).error ?? `HTTP ${response.status}` });
+    onProgress?.(index + 1, files.length);
   }
   return results;
 }
 
 export async function deleteFont(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/api/fonts/${id}`, {
-    method: "DELETE",
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await res.text());
+  await json(await api.fonts[":id"].$delete({ param: { id } }, { headers: authHeaders() }));
 }
 
 export async function deleteFontsBatch(ids: string[]): Promise<number> {
-  const res = await fetch(`${BASE}/api/fonts`, {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ ids }),
-  });
-  const json = await res.json() as { deleted: number };
-  return json.deleted ?? 0;
+  const result = await json<{ deleted: number }>(await api.fonts.$delete({ json: { ids } }, { headers: authHeaders() }));
+  return result.deleted;
 }
 
 export async function downloadFontFile(id: string): Promise<{ blob: Blob; filename: string }> {
-  const res = await fetch(`${BASE}/api/fonts/${encodeURIComponent(id)}/download`, {
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  const blob = await res.blob();
-  const filename = filenameFromContentDisposition(res.headers.get("content-disposition"), "font");
-  return { blob, filename };
+  const response = await fetch(manualUrl(`/api/fonts/${encodeURIComponent(id)}/download`), { headers: authHeaders() });
+  if (!response.ok) throw new Error(await response.text());
+  return { blob: await response.blob(), filename: filenameFromContentDisposition(response.headers.get("content-disposition"), "font") };
 }
 
-export async function browseR2(prefix = "", cursor?: string): Promise<BrowseResponse> {
-  const params = new URLSearchParams({ prefix });
-  if (cursor) params.set("cursor", cursor);
-  const res = await fetch(`${BASE}/api/fonts/browse?${params}`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+export async function browseR2(prefix = "", _cursor?: string): Promise<BrowseResponse> {
+  return json(await api.fonts.browse.$get({ query: { prefix } }, { headers: authHeaders() }));
 }
 
-export async function indexR2Folder(
-  prefix: string,
-  cursor?: string,
-  batchSize = 10,
-): Promise<IndexFolderResponse> {
-  const res = await fetch(`${BASE}/api/fonts/index-folder`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ prefix, cursor, batchSize }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+export async function indexR2Folder(prefix: string, _cursor?: string, batchSize = 20): Promise<IndexFontsResponse> {
+  return json(await api.fonts.index.$post({ json: { prefix, batch_size: batchSize } }, { headers: authHeaders() }));
 }
 
-export async function listR2Keys(prefix: string, cursor?: string, limit = 500): Promise<ListKeysResponse> {
-  const params = new URLSearchParams({ prefix, limit: String(limit) });
-  if (cursor) params.set("cursor", cursor);
-  const res = await fetch(`${BASE}/api/fonts/list-keys?${params}`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+export async function indexR2Keys(keys: string[]): Promise<IndexFontsResponse> {
+  return json(await api.fonts.index.$post({ json: { keys, batch_size: 100 } }, { headers: authHeaders() }));
 }
 
-export async function indexR2Keys(r2Keys: string[]): Promise<IndexFolderResponse> {
-  const res = await fetch(`${BASE}/api/fonts/index-folder`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ r2Keys }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+export async function listR2Keys(prefix: string, cursor?: string, limit = 500): Promise<{ keys: Array<{ key: string; size: number }>; nextCursor: string | null; done: boolean }> {
+  return json(await api.fonts.keys.$get({ query: { prefix, cursor: Number(cursor ?? 0), limit } }, { headers: authHeaders() }));
 }
 
-export interface FontStats {
-  total: number;
-  folders: Array<{ prefix: string; count: number }>;
-}
+export async function getFontStats(): Promise<FontStats> { return json(await api.fonts.stats.$get({}, { headers: authHeaders() })); }
+export async function scanLocalFonts(): Promise<ScanFontsResponse> { return json(await api.fonts.scan.$post({}, { headers: authHeaders() })); }
+export async function findDuplicateFonts(): Promise<{ groups: DuplicateGroup[]; total: number }> { return json(await api.fonts.duplicates.$get({}, { headers: authHeaders() })); }
+export async function dedupFonts(): Promise<DedupResponse> { return json(await api.fonts.deduplicate.$post({}, { headers: authHeaders() })); }
 
-export async function getFontStats(): Promise<FontStats> {
-  const res = await fetch(`${BASE}/api/fonts/stats`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-// ─── Local-only: Scan local font directory ─────────────────────────────────────
-
-export interface ScanLocalResult {
-  total: number;
-  indexed: number;
-  skipped: number;
-  purged: number;
-  errors: string[];
-}
-
-export async function scanLocalFonts(): Promise<ScanLocalResult> {
-  const res = await fetch(`${BASE}/api/fonts/scan-local`, {
-    method: "POST",
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-// ─── Local-only: Repair stale DB keys (e.g. migrated from R2) ─────────────────
-
-export interface RepairKeysResult {
-  total: number;
-  ok: number;
-  updated: number;
-  deleted: number;
-}
-
-export async function repairFontKeys(): Promise<RepairKeysResult> {
-  const res = await fetch(`${BASE}/api/fonts/repair-keys`, {
-    method: "POST",
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-// ─── Subset API (public, no auth) ─────────────────────────────────────────────
-
-export async function subsetFile(file: File, opts: SubsetOptions = {}): Promise<SubsetFileResult> {
+export interface SubsetFileResult { code: number; messages: string[]; data: Uint8Array | null }
+export async function subsetFile(file: File, options: Partial<SubsetOptions> & { signal?: AbortSignal } = {}): Promise<SubsetFileResult> {
   const headers: Record<string, string> = {
     "Content-Type": "application/octet-stream",
     "X-Filename": base64Encode(file.name),
-    "X-Fonts-Check": opts.fontsCheck ? "1" : "0",
-    "X-Clear-Fonts": opts.clearFonts ? "1" : "0",
+    "X-Fonts-Check": options.fontsCheck ? "1" : "0",
+    "X-Clear-Fonts": options.clearFonts ? "1" : "0",
   };
-  if (opts.fontNameMode) headers["X-Font-Name-Mode"] = opts.fontNameMode;
-  if (opts.fontAliasSalt) headers["X-Font-Alias-Salt"] = base64Encode(opts.fontAliasSalt);
-  if (opts.srtFormat) headers["X-Srt-Format"] = base64Encode(opts.srtFormat);
-  if (opts.srtStyle) headers["X-Srt-Style"] = base64Encode(opts.srtStyle);
-
-  const res = await fetch(`${BASE}/api/subset`, {
-    method: "POST",
-    headers,
-    body: await file.arrayBuffer(),
-    signal: opts.signal,
-  });
-
-  const code = parseInt(res.headers.get("x-code") ?? "500", 10);
-  const msgHeader = res.headers.get("x-message") ?? "";
-  let messages: string[] = [];
-  if (msgHeader) {
-    try {
-      const decoded = base64Decode(msgHeader);
-      const parsed = JSON.parse(decoded);
-      messages = Array.isArray(parsed) ? parsed : [String(parsed)];
-    } catch {
-      messages = [msgHeader];
-    }
-  }
-
-  const arrayBuffer = await res.arrayBuffer();
-  const data = arrayBuffer.byteLength > 0 ? new Uint8Array(arrayBuffer) : null;
-
-  return { code, messages, data };
+  if (options.fontNameMode) headers["X-Font-Name-Mode"] = options.fontNameMode;
+  if (options.fontAliasSalt) headers["X-Font-Alias-Salt"] = base64Encode(options.fontAliasSalt);
+  if (options.srtFormat) headers["X-Srt-Format"] = base64Encode(options.srtFormat);
+  if (options.srtStyle) headers["X-Srt-Style"] = base64Encode(options.srtStyle);
+  const response = await fetch(manualUrl("/api/subset"), { method: "POST", headers, body: await file.arrayBuffer(), signal: options.signal });
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const messageHeader = response.headers.get("x-message") ?? "";
+  return { code: Number.parseInt(response.headers.get("x-code") ?? "500", 10), messages: messageHeader ? JSON.parse(base64Decode(messageHeader)) as string[] : [], data: bytes.byteLength ? bytes : null };
 }
 
-export { base64Encode, base64Decode };
+export async function listSharedArchives(): Promise<SharedArchive[]> { return json(await api.archives.$get()); }
+export async function listPendingArchives(): Promise<SharedArchive[]> { return json(await api.archives.pending.$get({}, { headers: authHeaders() })); }
 
-// ─── Sharing API ──────────────────────────────────────────────────────────────
-
-export interface SharedArchive {
-  id: string;
-  name_cn: string;
-  letter: string;
-  season: string;
-  sub_group: string;
-  languages: string;       // JSON array string
-  subtitle_format: string; // JSON array string
-  episode_count: number;
-  has_fonts: number;
-  filename: string;
-  r2_key: string | null;
-  file_size: number;
-  file_count: number;
-  download_url: string | null;
-  local_path: string | null;
-  status: string;
-  contributor: string | null;
-  sub_entries: string | null;
-  created_at: string;
-  updated_at: string;
+export async function uploadSharedArchive(file: File, metadata: ArchiveMetadata): Promise<{ id: string; download_url: string | null; filename: string; status: string }> {
+  const form = new FormData(); form.append("file", file); form.append("metadata", JSON.stringify(metadata));
+  return json(await fetch(manualUrl("/api/archives/upload"), { method: "POST", headers: authHeaders(), body: form }));
 }
 
-export async function listSharedArchives(): Promise<SharedArchive[]> {
-  const res = await fetch(`${BASE}/api/sharing/archives`);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-export async function listPendingArchives(): Promise<SharedArchive[]> {
-  const res = await fetch(`${BASE}/api/sharing/pending`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-export async function uploadSharedArchive(
-  file: File,
-  metadata: {
-    name_cn: string;
-    letter: string;
-    season: string;
-    sub_group: string;
-    languages: string[];
-    has_fonts: boolean;
-  },
-): Promise<{ id: string; download_url: string | null; filename: string; status: string }> {
-  const form = new FormData();
-  form.append("file", file);
-  form.append("metadata", JSON.stringify(metadata));
-  const res = await fetch(`${BASE}/api/sharing/upload`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: form,
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-    throw new Error((body.error as string) || `Upload failed (HTTP ${res.status})`);
-  }
-  return res.json();
-}
-
-export function contributeArchive(
-  file: File,
-  metadata: {
-    name_cn: string;
-    letter: string;
-    season: string;
-    sub_group: string;
-    languages: string[];
-    has_fonts: boolean;
-    contributor?: string;
-  },
-  onProgress?: (percent: number) => void,
-): Promise<{ id: string; status: string; message: string }> {
-  return new Promise((resolve, reject) => {
-    const form = new FormData();
-    form.append("file", file);
-    form.append("metadata", JSON.stringify(metadata));
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${BASE}/api/sharing/contribute`);
-    xhr.upload.addEventListener("progress", (e) => {
-      if (e.lengthComputable && onProgress) {
-        onProgress(Math.round((e.loaded / e.total) * 100));
-      }
-    });
-    xhr.addEventListener("load", () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try { resolve(JSON.parse(xhr.responseText)); }
-        catch { resolve({ id: "", status: "ok", message: "" }); }
-      } else {
-        try {
-          const body = JSON.parse(xhr.responseText);
-          reject(new Error(body.error || `Contribute failed (HTTP ${xhr.status})`));
-        } catch {
-          reject(new Error(`Contribute failed (HTTP ${xhr.status})`));
-        }
-      }
-    });
-    xhr.addEventListener("error", () => reject(new Error("Network error")));
-    xhr.addEventListener("abort", () => reject(new Error("Upload aborted")));
+export function contributeArchive(file: File, metadata: ArchiveMetadata, onProgress?: (percent: number) => void): Promise<{ id: string; status: string; message: string }> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const form = new FormData(); form.append("file", file); form.append("metadata", JSON.stringify(metadata));
+    const xhr = new XMLHttpRequest(); xhr.open("POST", manualUrl("/api/archives/contribute"));
+    xhr.upload.addEventListener("progress", (event) => { if (event.lengthComputable) onProgress?.(Math.round(event.loaded / event.total * 100)); });
+    xhr.addEventListener("load", () => xhr.status >= 200 && xhr.status < 300 ? resolvePromise(JSON.parse(xhr.responseText)) : rejectPromise(new Error(parseXhrError(xhr))));
+    xhr.addEventListener("error", () => rejectPromise(new Error("Network error")));
+    xhr.addEventListener("abort", () => rejectPromise(new Error("Upload aborted")));
     xhr.send(form);
   });
 }
 
-export async function approveArchive(id: string): Promise<{ id: string; status: string }> {
-  const res = await fetch(`${BASE}/api/sharing/archives/${id}/approve`, {
-    method: "POST",
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-export async function rejectArchive(id: string): Promise<{ id: string; status: string }> {
-  const res = await fetch(`${BASE}/api/sharing/archives/${id}/reject`, {
-    method: "POST",
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-export async function deleteArchive(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/api/sharing/archives/${id}`, {
-    method: "DELETE",
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await res.text());
-}
-
-export function importIndexSSE(onMessage: (data: any) => void, onDone: () => void, onError: (err: string) => void): void {
-  const key = getApiKey();
-  const headers: Record<string, string> = { "X-API-Key": key };
-
-  fetch(`${BASE}/api/sharing/import-index`, {
-    method: "POST",
-    headers,
-  }).then(async (res) => {
-    if (!res.ok) {
-      onError(`HTTP ${res.status}: ${await res.text()}`);
-      return;
-    }
-    const reader = res.body?.getReader();
-    if (!reader) { onError("No response body"); return; }
-
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (line.startsWith("data:")) {
-          try {
-            const data = JSON.parse(line.slice(5).trim());
-            onMessage(data);
-            if (data.phase === "done" || data.phase === "error") {
-              onDone();
-              return;
-            }
-          } catch { /* skip malformed */ }
-        }
-      }
-    }
-    onDone();
-  }).catch((e) => onError(String(e)));
-}
-
-/** Edit archive metadata. */
-export async function editArchive(
-  id: string,
-  data: Partial<{
-    name_cn: string;
-    letter: string;
-    season: string;
-    sub_group: string;
-    languages: string[];
-    has_fonts: boolean;
-    episode_count: number;
-  }>,
-): Promise<SharedArchive> {
-  const res = await fetch(`${BASE}/api/sharing/archives/${id}`, {
-    method: "PUT",
-    headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-    throw new Error((body.error as string) || `Edit failed (HTTP ${res.status})`);
-  }
-  return res.json();
-}
-
-/** Preview archive ZIP contents (file listing). */
-export async function previewArchive(id: string): Promise<{
-  filename: string;
-  totalFiles: number;
-  subtitleFiles: number;
-  files: { name: string; ext: string; isSubtitle: boolean }[];
-}> {
-  const res = await fetch(`${BASE}/api/sharing/archives/${id}/preview`, {
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-/** Download archive file. Returns the file blob. */
+export async function approveArchive(id: string): Promise<{ id: string; status: string }> { return json(await api.archives[":id"].approve.$post({ param: { id } }, { headers: authHeaders() })); }
+export async function rejectArchive(id: string): Promise<{ id: string; status: string }> { return json(await api.archives[":id"].reject.$post({ param: { id } }, { headers: authHeaders() })); }
+export async function deleteArchive(id: string): Promise<void> { await json(await api.archives[":id"].$delete({ param: { id } }, { headers: authHeaders() })); }
+export async function editArchive(id: string, patch: ArchivePatch): Promise<SharedArchive> { return json(await api.archives[":id"].$put({ param: { id }, json: patch }, { headers: authHeaders() })); }
+export async function previewArchive(id: string): Promise<ArchivePreview> { return json(await api.archives[":id"].preview.$get({ param: { id } }, { headers: authHeaders() })); }
 export async function downloadArchiveFile(id: string): Promise<{ blob: Blob; filename: string }> {
-  const res = await fetch(`${BASE}/api/sharing/archives/${id}/download-file`, {
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  const cd = res.headers.get("content-disposition");
-  const filename = cd?.match(/filename="?(.+?)"?$/)?.[1] ?? "archive";
-  const blob = await res.blob();
-  return { blob, filename };
+  const response = await fetch(manualUrl(`/api/archives/${encodeURIComponent(id)}/file`), { headers: authHeaders() });
+  if (!response.ok) throw new Error(await response.text());
+  return { blob: await response.blob(), filename: filenameFromContentDisposition(response.headers.get("content-disposition"), "archive") };
 }
 
-/** Upload to an existing anime/season directory. */
-export async function uploadToExisting(
-  file: File,
-  metadata: {
-    name_cn: string;
-    letter: string;
-    season: string;
-    sub_group: string;
-    languages: string[];
-    has_fonts: boolean;
-  },
-): Promise<{ id: string; status: string; filename: string; download_url?: string }> {
-  const form = new FormData();
-  form.append("file", file);
-  form.append("name_cn", metadata.name_cn);
-  form.append("letter", metadata.letter);
-  form.append("season", metadata.season);
-  form.append("sub_group", metadata.sub_group);
-  form.append("languages", JSON.stringify(metadata.languages));
-  form.append("has_fonts", String(metadata.has_fonts));
-  const res = await fetch(`${BASE}/api/sharing/upload-to-existing`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: form,
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-    throw new Error((body.error as string) || `Upload failed (HTTP ${res.status})`);
-  }
-  return res.json();
+export async function listProcessingLogs(page = 1, limit = 50, search = "", code?: number): Promise<ProcessingLogList> {
+  return json(await api.activity.$get({ query: { page, limit, search, ...(code === undefined ? {} : { code }) } }, {}));
 }
-
-// ─── Font Dedup API ───────────────────────────────────────────────────────────
-
-export interface DuplicateGroup {
-  hash: string;
-  size: number;
-  files: { id: string; r2_key: string; filename: string }[];
-}
-
-export async function findDuplicateFonts(): Promise<{ groups: DuplicateGroup[]; total: number }> {
-  const res = await fetch(`${BASE}/api/fonts/duplicates`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-export async function dedupFonts(): Promise<{ groups: number; removed: number; freedBytes: number }> {
-  const res = await fetch(`${BASE}/api/fonts/dedup`, {
-    method: "POST",
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-// ─── Processing Logs API ──────────────────────────────────────────────────────
-
-export interface ProcessingLog {
-  id: string;
-  filename: string;
-  client_ip: string;
-  code: number;
-  messages: string | null;
-  missing_fonts: string | null;
-  font_count: number;
-  file_size: number;
-  elapsed_ms: number;
-  processed_at: string;
-}
-
-export interface ProcessingLogList {
-  total: number;
-  page: number;
-  limit: number;
-  data: ProcessingLog[];
-}
-
-export interface MissingFontRanking {
-  font_name: string;
-  count: number;
-  resolved: boolean;
-  resolved_at: string | null;
-}
-
-export interface LogStats {
-  total: number;
-  today: number;
-  success: number;
-  warnings: number;
-  errors: number;
-  totalMissingFonts: number;
-}
-
-export async function listProcessingLogs(
-  page = 1,
-  limit = 50,
-  search = "",
-  code?: number,
-): Promise<ProcessingLogList> {
-  const params = new URLSearchParams({ page: String(page), limit: String(limit) });
-  if (search) params.set("search", search);
-  if (code !== undefined) params.set("code", String(code));
-  const res = await fetch(`${BASE}/api/logs?${params}`);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
 export async function getMissingFonts(limit = 20, showResolved = false): Promise<MissingFontRanking[]> {
-  const params = new URLSearchParams({ limit: String(limit) });
-  if (showResolved) params.set("show_resolved", "true");
-  const res = await fetch(`${BASE}/api/logs/missing-fonts?${params}`);
-  if (!res.ok) throw new Error(await res.text());
-  const json = await res.json();
-  return json.data ?? json;
+  const result = await json<{ total: number; data: MissingFontRanking[] }>(await api.activity["missing-fonts"].$get({ query: { limit, show_resolved: String(showResolved) as "true" | "false" } }));
+  return result.data;
+}
+export async function resolveMissingFont(fontName: string): Promise<void> { await json(await api.activity["missing-fonts"].resolve.$post({ json: { font_name: fontName } }, { headers: authHeaders() })); }
+export async function unresolveMissingFont(fontName: string): Promise<void> { await json(await api.activity["missing-fonts"].unresolve.$post({ json: { font_name: fontName } }, { headers: authHeaders() })); }
+export async function getLogStats(): Promise<LogStats> { return json(await api.activity.stats.$get()); }
+
+export async function listApiTokens(): Promise<ApiToken[]> { return (await json<{ data: ApiToken[] }>(await api.tokens.$get({}, { headers: authHeaders() }))).data; }
+export async function getApiTokenStats(): Promise<ApiTokenStats> { return json(await api.tokens.stats.$get({}, { headers: authHeaders() })); }
+export async function createApiToken(input: { name: string; note?: string }): Promise<{ token: ApiToken; plaintext: string }> { return json(await api.tokens.$post({ json: { ...input, enabled: true } }, { headers: authHeaders() })); }
+export async function updateApiToken(id: string, patch: { name?: string; note?: string | null; enabled?: boolean }): Promise<ApiToken> {
+  return (await json<{ token: ApiToken }>(await api.tokens[":id"].$patch({ param: { id }, json: patch }, { headers: authHeaders() }))).token;
+}
+export async function deleteApiToken(id: string): Promise<void> { await json(await api.tokens[":id"].$delete({ param: { id } }, { headers: authHeaders() })); }
+export async function getApiTokenHistory(id: string, page = 1, limit = 50, status?: ApiUploadStatus): Promise<ApiHistoryResponse> {
+  return json(await api.tokens[":id"].history.$get({ param: { id }, query: { page, limit, ...(status ? { status } : {}) } }, { headers: authHeaders() }));
+}
+export async function getAllApiHistory(page = 1, limit = 50, status?: ApiUploadStatus): Promise<ApiHistoryResponse> {
+  return json(await api.tokens.history.$get({ query: { page, limit, ...(status ? { status } : {}) } }, { headers: authHeaders() }));
 }
 
-export async function resolveMissingFont(fontName: string): Promise<void> {
-  const res = await fetch(`${BASE}/api/logs/missing-fonts/resolve`, {
-    method: "POST",
-    headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({ font_name: fontName }),
-  });
-  if (!res.ok) throw new Error(await res.text());
+export function base64Encode(value: string): string { return btoa(unescape(encodeURIComponent(value))); }
+export function base64Decode(value: string): string { return new TextDecoder().decode(Uint8Array.from(atob(value), (character) => character.charCodeAt(0))); }
+
+function filenameFromContentDisposition(value: string | null, fallback: string): string {
+  if (!value) return fallback;
+  const encoded = value.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) try { return decodeURIComponent(encoded); } catch { return encoded; }
+  return value.match(/filename="([^"]+)"/i)?.[1] ?? value.match(/filename=([^;]+)/i)?.[1]?.trim() ?? fallback;
 }
 
-export async function unresolveMissingFont(fontName: string): Promise<void> {
-  const res = await fetch(`${BASE}/api/logs/missing-fonts/unresolve`, {
-    method: "POST",
-    headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({ font_name: fontName }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-}
-
-export async function getLogStats(): Promise<LogStats> {
-  const res = await fetch(`${BASE}/api/logs/stats`);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-// ─── API Upload Tokens (admin) ────────────────────────────────────────────────
-
-export interface ApiToken {
-  id: string;
-  name: string;
-  prefix: string;
-  enabled: boolean;
-  note: string | null;
-  upload_count: number;
-  total_bytes: number;
-  last_used_at: string | null;
-  last_used_ip: string | null;
-  created_at: string;
-}
-
-export interface ApiTokenStats {
-  totals: { tokens: number; uploads: number; bytes: number };
-  byStatus: { success: number; duplicate: number; rejected: number; error: number };
-}
-
-export type ApiUploadStatus = "success" | "duplicate" | "rejected" | "error";
-
-export interface ApiUploadHistoryItem {
-  id: string;
-  token_id: string;
-  font_file_id: string | null;
-  filename: string;
-  size: number;
-  sha256: string | null;
-  status: ApiUploadStatus;
-  error: string | null;
-  client_ip: string | null;
-  user_agent: string | null;
-  uploaded_at: string;
-}
-
-export interface ApiHistoryResponse {
-  total: number;
-  page: number;
-  limit: number;
-  data: ApiUploadHistoryItem[];
-  token?: ApiToken;
-}
-
-export async function listApiTokens(): Promise<ApiToken[]> {
-  const res = await fetch(`${BASE}/api/api-tokens`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await res.text());
-  const json = await res.json() as { data: ApiToken[] };
-  return json.data ?? [];
-}
-
-export async function getApiTokenStats(): Promise<ApiTokenStats> {
-  const res = await fetch(`${BASE}/api/api-tokens/stats`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-export async function createApiToken(input: { name: string; note?: string }): Promise<{ token: ApiToken; plaintext: string }> {
-  const res = await fetch(`${BASE}/api/api-tokens`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify(input),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-    throw new Error((body.error as string) || `HTTP ${res.status}`);
-  }
-  return res.json();
-}
-
-export async function updateApiToken(
-  id: string,
-  patch: { name?: string; note?: string | null; enabled?: boolean },
-): Promise<ApiToken> {
-  const res = await fetch(`${BASE}/api/api-tokens/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify(patch),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  const json = await res.json() as { token: ApiToken };
-  return json.token;
-}
-
-export async function deleteApiToken(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/api/api-tokens/${id}`, {
-    method: "DELETE",
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await res.text());
-}
-
-export async function getApiTokenHistory(
-  id: string,
-  page = 1,
-  limit = 50,
-  status?: ApiUploadStatus,
-): Promise<ApiHistoryResponse> {
-  const params = new URLSearchParams({ page: String(page), limit: String(limit) });
-  if (status) params.set("status", status);
-  const res = await fetch(`${BASE}/api/api-tokens/${id}/history?${params}`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-export async function getAllApiHistory(
-  page = 1,
-  limit = 50,
-  status?: ApiUploadStatus,
-): Promise<ApiHistoryResponse> {
-  const params = new URLSearchParams({ page: String(page), limit: String(limit) });
-  if (status) params.set("status", status);
-  const res = await fetch(`${BASE}/api/api-tokens/history?${params}`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+function parseXhrError(xhr: XMLHttpRequest): string {
+  try { return (JSON.parse(xhr.responseText) as { error?: string }).error ?? `HTTP ${xhr.status}`; } catch { return `HTTP ${xhr.status}`; }
 }

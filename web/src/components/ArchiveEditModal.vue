@@ -30,7 +30,7 @@ watch(() => props.archive, (archive) => {
     letter: archive.letter,
     season: archive.season,
     sub_group: archive.sub_group,
-    languages: (() => { try { return JSON.parse(archive.languages); } catch { return []; } })(),
+    languages: [...archive.languages],
     has_fonts: !!archive.has_fonts,
     episode_count: archive.episode_count,
   };

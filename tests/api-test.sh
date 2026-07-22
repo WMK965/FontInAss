@@ -161,21 +161,21 @@ assert_status "200" "Browse CatCat-Fonts/ returns 200"
 # ── 7. Font List Keys ───────────────────────────────────────────────────────
 section "7. Font List Keys"
 
-api_auth GET "/api/fonts/list-keys?limit=10"
+api_auth GET "/api/fonts/keys?limit=10"
 assert_status "200" "List keys returns 200"
 assert_json_field "keys" "List keys has 'keys' array"
 
 # ── 8. Font Scan (Local) ────────────────────────────────────────────────────
 section "8. Font Scan"
 
-api_auth POST "/api/fonts/scan-local"
+api_auth POST "/api/fonts/scan"
 assert_status "200" "Scan local returns 200"
 assert_json_field "total" "Scan result has 'total'"
 
 # ── 9. Font Index Folder ────────────────────────────────────────────────────
 section "9. Font Index Folder"
 
-api_auth POST "/api/fonts/index-folder" -H "Content-Type: application/json" -d '{"prefix":"CatCat-Fonts/","batchSize":2}'
+api_auth POST "/api/fonts/index" -H "Content-Type: application/json" -d '{"prefix":"CatCat-Fonts/","batch_size":2}'
 assert_status "200" "Index folder returns 200"
 
 # ── 10. Duplicates ──────────────────────────────────────────────────────────
@@ -183,12 +183,6 @@ section "10. Font Duplicates"
 
 api_auth GET "/api/fonts/duplicates"
 assert_status "200" "Get duplicates returns 200"
-
-# ── 11. Repair Keys ─────────────────────────────────────────────────────────
-section "11. Repair Keys"
-
-api_auth POST "/api/fonts/repair-keys"
-assert_status "200" "Repair keys returns 200"
 
 # ── 12. Subset — Single File ────────────────────────────────────────────────
 section "12. Subset — Single File"
@@ -366,43 +360,43 @@ assert_status "400" "Upload with no file returns 400"
 # ── 17. Logs ────────────────────────────────────────────────────────────────
 section "17. Processing Logs"
 
-api GET "/api/logs"
-assert_status "200" "GET /api/logs returns 200"
+api GET "/api/activity"
+assert_status "200" "GET /api/activity returns 200"
 assert_json_field "data" "Logs has 'data' array"
 assert_json_field "total" "Logs has 'total'"
 
-api GET "/api/logs?page=1&limit=5"
+api GET "/api/activity?page=1&limit=5"
 assert_status "200" "Paginated logs work"
 
-api GET "/api/logs?search=test"
+api GET "/api/activity?search=test"
 assert_status "200" "Log search works"
 
-api GET "/api/logs?code=200"
+api GET "/api/activity?code=200"
 assert_status "200" "Log filter by code works"
 
 # ── 18. Log Stats ───────────────────────────────────────────────────────────
 section "18. Log Stats"
 
-api GET "/api/logs/stats"
-assert_status "200" "GET /api/logs/stats returns 200"
+api GET "/api/activity/stats"
+assert_status "200" "GET /api/activity/stats returns 200"
 assert_json_field "total" "Log stats has 'total'"
 
 # ── 19. Missing Fonts ───────────────────────────────────────────────────────
 section "19. Missing Fonts"
 
-api GET "/api/logs/missing-fonts"
-assert_status "200" "GET /api/logs/missing-fonts returns 200"
+api GET "/api/activity/missing-fonts"
+assert_status "200" "GET /api/activity/missing-fonts returns 200"
 
-api GET "/api/logs/missing-fonts?limit=5"
+api GET "/api/activity/missing-fonts?limit=5"
 assert_status "200" "Missing fonts with limit works"
 
 # ── 20. Missing Font Resolve/Unresolve (Auth) ───────────────────────────────
 section "20. Missing Font Resolve (Auth)"
 
-api POST "/api/logs/missing-fonts/resolve" -H "Content-Type: application/json" -d '{"font_name":"TestFont"}'
+api POST "/api/activity/missing-fonts/resolve" -H "Content-Type: application/json" -d '{"font_name":"TestFont"}'
 assert_status "401" "Resolve without auth returns 401"
 
-api_auth POST "/api/logs/missing-fonts/resolve" -H "Content-Type: application/json" -d '{"font_name":"TestFont___nonexistent"}'
+api_auth POST "/api/activity/missing-fonts/resolve" -H "Content-Type: application/json" -d '{"font_name":"TestFont___nonexistent"}'
 if [[ "$HTTP_STATUS" == "200" || "$HTTP_STATUS" == "404" ]]; then
   log_pass "Resolve with auth handled ($HTTP_STATUS)"
 else
@@ -412,48 +406,42 @@ fi
 # ── 21. Sharing — Public Endpoints ──────────────────────────────────────────
 section "21. Sharing — Public"
 
-api GET "/api/sharing/archives"
+api GET "/api/archives"
 if [[ "$HTTP_STATUS" == "200" ]]; then
-  log_pass "GET /api/sharing/archives returns 200"
-  # Check ETag caching
-  ETAG=$(curl -s -D - "$BASE_URL/api/sharing/archives" -o /dev/null 2>/dev/null | grep -i "etag:" | tr -d '\r\n' | sed 's/etag: //i')
-  if [[ -n "$ETAG" ]]; then
-    api GET "/api/sharing/archives" -H "If-None-Match: $ETAG"
-    if [[ "$HTTP_STATUS" == "304" ]]; then
-      log_pass "ETag cache returns 304"
-    else
-      log_pass "ETag sent but server returned $HTTP_STATUS (cache may have expired)"
-    fi
+  log_pass "GET /api/archives returns 200"
+  CACHE_CONTROL=$(curl -s -D - "$BASE_URL/api/archives" -o /dev/null 2>/dev/null | grep -i "cache-control:" | tr -d '\r\n')
+  if echo "$CACHE_CONTROL" | grep -qi "max-age=60"; then
+    log_pass "Archive list cache policy present"
   else
-    log_skip "ETag caching (no ETag in response)"
+    log_fail "Archive list cache policy" "expected max-age=60"
   fi
 else
-  log_fail "GET /api/sharing/archives" "expected 200, got $HTTP_STATUS"
+  log_fail "GET /api/archives" "expected 200, got $HTTP_STATUS"
 fi
 
 # ── 22. Sharing — Auth Required ─────────────────────────────────────────────
 section "22. Sharing — Auth"
 
-api GET "/api/sharing/pending"
-assert_status "401" "GET /api/sharing/pending without auth returns 401"
+api GET "/api/archives/pending"
+assert_status "401" "GET /api/archives/pending without auth returns 401"
 
-api_auth GET "/api/sharing/pending"
-assert_status "200" "GET /api/sharing/pending with auth returns 200"
+api_auth GET "/api/archives/pending"
+assert_status "200" "GET /api/archives/pending with auth returns 200"
 
 # ── 23. Sharing — Archive CRUD ──────────────────────────────────────────────
 section "23. Sharing — Archive CRUD"
 
-ARCHIVE_ID=$(curl -s "$BASE_URL/api/sharing/archives" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if d else '')" 2>/dev/null || echo "")
+ARCHIVE_ID=$(curl -s "$BASE_URL/api/archives" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if d else '')" 2>/dev/null || echo "")
 
 if [[ -n "$ARCHIVE_ID" ]]; then
-  api_auth GET "/api/sharing/archives/${ARCHIVE_ID}/preview"
+  api_auth GET "/api/archives/${ARCHIVE_ID}/preview"
   if [[ "$HTTP_STATUS" =~ ^(200|500)$ ]]; then
     log_pass "Archive preview responds ($HTTP_STATUS)"
   else
     log_fail "Archive preview" "unexpected $HTTP_STATUS"
   fi
 
-  api_auth PUT "/api/sharing/archives/${ARCHIVE_ID}" \
+  api_auth PUT "/api/archives/${ARCHIVE_ID}" \
     -H "Content-Type: application/json" \
     -d "{}"
   if [[ "$HTTP_STATUS" == "200" ]]; then
@@ -469,10 +457,10 @@ fi
 # ── 24. Sharing — Non-existent Archive ──────────────────────────────────────
 section "24. Sharing — 404 Cases"
 
-api GET "/api/sharing/archives/99999/download"
+api GET "/api/archives/99999/download"
 assert_status "404" "Download non-existent archive returns 404"
 
-api_auth DELETE "/api/sharing/archives/99999"
+api_auth DELETE "/api/archives/99999"
 if [[ "$HTTP_STATUS" == "404" || "$HTTP_STATUS" == "200" ]]; then
   log_pass "Delete non-existent archive handled ($HTTP_STATUS)"
 else
@@ -482,7 +470,7 @@ fi
 # ── 25. CORS ────────────────────────────────────────────────────────────────
 section "25. CORS Headers"
 
-CORS_HEADERS=$(curl -s -D - -o /dev/null "$BASE_URL/api/logs/stats" 2>/dev/null | grep -i "access-control")
+CORS_HEADERS=$(curl -s -D - -o /dev/null "$BASE_URL/api/activity/stats" 2>/dev/null | grep -i "access-control")
 if echo "$CORS_HEADERS" | grep -qi "access-control-allow-origin"; then
   log_pass "CORS Access-Control-Allow-Origin present"
 else
@@ -492,7 +480,7 @@ fi
 # ── 26. Compression ─────────────────────────────────────────────────────────
 section "26. Response Compression"
 
-COMPRESSED_SIZE=$(curl -s -H "Accept-Encoding: gzip" -D - "$BASE_URL/api/logs/stats" -o /dev/null 2>/dev/null | grep -i "content-encoding")
+COMPRESSED_SIZE=$(curl -s -H "Accept-Encoding: gzip" -D - "$BASE_URL/api/activity/stats" -o /dev/null 2>/dev/null | grep -i "content-encoding")
 if echo "$COMPRESSED_SIZE" | grep -qi "gzip\|br"; then
   log_pass "Response compression enabled"
 else
@@ -519,7 +507,7 @@ with zipfile.ZipFile('$TEMP_ZIP', 'w') as z:
 "
 
 METADATA='{"name_cn":"测试动画","letter":"C","season":"S1","sub_group":"Test","languages":["zh-Hans"],"has_fonts":false}'
-api POST "/api/sharing/contribute" \
+api POST "/api/archives/contribute" \
   -F "file=@${TEMP_ZIP};filename=test-contribute.zip" \
   -F "metadata=$METADATA"
 
@@ -591,25 +579,6 @@ if [[ -f "$REAL_ASS" ]]; then
 else
   log_skip "Real subtitle processing (sample ASS not found)"
 fi
-
-# ── 31. Import Index (SSE) ──────────────────────────────────────────────────
-section "31. Import Index (SSE)"
-
-SSE_TMP=$(mktemp)
-SSE_STATUS=$(curl -s -o "$SSE_TMP" -w "%{http_code}" -m 5 -X POST \
-  -H "X-API-Key: ${API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{}' \
-  "${BASE_URL}/api/sharing/import-index" 2>/dev/null) || true
-
-if [[ "$SSE_STATUS" == "200" || -s "$SSE_TMP" ]]; then
-  log_pass "Import index endpoint responds with SSE"
-elif echo "$SSE_STATUS" | grep -q "401"; then
-  log_fail "Import index" "auth not accepted"
-else
-  log_pass "Import index endpoint responds ($SSE_STATUS)"
-fi
-rm -f "$SSE_TMP"
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  S U M M A R Y

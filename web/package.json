@@ -1,14 +1,17 @@
 {
   "name": "fontinass-local-web",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "build": "bun run typecheck && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontinass/contracts": "workspace:*",
+    "@fontinass/server": "workspace:*",
     "@fontsource-variable/outfit": "^5.2.8",
     "@fontsource-variable/plus-jakarta-sans": "^5.2.8",
     "@vueuse/core": "^14.2.1",
@@ -17,6 +20,7 @@
     "copy-to-clipboard": "^3.3.3",
     "file-saver": "^2.0.5",
     "flexsearch": "^0.8.212",
+    "hono": "^4.7.10",
     "jszip": "^3.10.1",
     "lucide-vue-next": "^0.577.0",
     "tailwind-merge": "^3.5.0",

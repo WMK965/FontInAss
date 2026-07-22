@@ -1,10 +1,10 @@
 # fontinass
 
-CLI tool for [FontInAss](https://github.com/Yuri-NagaSaki/FontInAss-Local) — embed fonts into ASS/SSA/SRT subtitle files via a FontInAss server.
+CLI tool for [FontInAss](https://github.com/Yuri-NagaSaki/FontInAss) — embed fonts into ASS/SSA/SRT subtitle files via a FontInAss server.
 
 ## Install
 
-Download the latest binary from [Releases](https://github.com/Yuri-NagaSaki/FontInAss-Local/releases):
+Download the latest binary from [Releases](https://github.com/Yuri-NagaSaki/FontInAss/releases):
 
 | Platform | Binary |
 |----------|--------|

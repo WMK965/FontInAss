@@ -1,0 +1,16 @@
+{
+  "name": "@fontinass/storage",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@fontinass/archive-library": "workspace:*",
+    "@fontinass/contracts": "workspace:*",
+    "@fontinass/font-catalog": "workspace:*",
+    "aws4fetch": "^1.0.20"
+  }
+}
