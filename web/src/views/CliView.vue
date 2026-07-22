@@ -107,13 +107,13 @@ const configCmds = [
 }
 .text-page h1 {
   font-size: 2rem; font-weight: 700;
-  color: var(--color-ink-900);
+  color: var(--color-ink-950);
   margin: 0 0 1rem; line-height: 1.25;
   letter-spacing: -0.01em;
 }
 .text-page h2 {
   font-size: 1.4rem; font-weight: 600;
-  color: var(--color-ink-900);
+  color: var(--color-ink-950);
   margin: 2rem 0 0.6rem; line-height: 1.3;
   letter-spacing: -0.005em;
 }
@@ -121,42 +121,57 @@ const configCmds = [
 .text-page ul { list-style: disc; padding-left: 1.5rem; margin: 0 0 0.75rem; }
 .text-page li { margin: 0.2rem 0; }
 .text-page a {
-  color: var(--color-sakura-600, oklch(60% 0.18 18));
+  color: var(--color-sakura-600);
   text-decoration: underline; text-underline-offset: 2px;
 }
-.text-page a:hover { color: var(--color-ink-900); }
-.text-page a.active { color: var(--color-ink-900); font-weight: 600; }
+.text-page a:hover { color: var(--color-ink-950); }
+.text-page a.active { color: var(--color-ink-950); font-weight: 600; }
+
+/* Inline code + code blocks use design tokens so light/dark both stay readable.
+   Avoid :global(.dark) descendant selectors — Vue scoped compile can drop them. */
 .text-page code {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 0.9em;
-  padding: 0.1em 0.35em;
-  background: oklch(96% 0.008 12);
-  border-radius: 3px;
-  color: var(--color-ink-900);
+  padding: 0.12em 0.4em;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-ink-200);
+  border-radius: 4px;
+  color: var(--color-ink-950);
 }
-:global(.dark) .text-page code { background: oklch(30% 0.008 280); }
 
 .code-block {
-  display: flex; align-items: center; gap: 0.75rem;
-  padding: 0.6rem 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.7rem 0.9rem;
   margin: 0 0 0.85rem;
-  background: oklch(96% 0.008 12);
-  border-radius: 4px;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-ink-200);
+  border-radius: 8px;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 14.5px;
   overflow-x: auto;
+  color: var(--color-ink-950);
 }
-:global(.dark) .code-block { background: oklch(28% 0.008 280); }
 .code-block code {
-  flex: 1; padding: 0; background: transparent;
-  white-space: pre; color: var(--color-ink-900);
+  flex: 1;
+  padding: 0;
+  border: none;
+  background: transparent;
+  white-space: pre;
+  color: inherit;
 }
 .code-block button {
   flex-shrink: 0;
   font-size: 12px;
-  color: var(--color-ink-500);
-  padding: 0.15rem 0.5rem;
+  color: var(--color-ink-600);
+  padding: 0.2rem 0.55rem;
+  border-radius: 4px;
   font-family: var(--font-body);
+  transition: color 0.15s, background 0.15s;
 }
-.code-block button:hover { color: var(--color-ink-900); text-decoration: underline; }
+.code-block button:hover {
+  color: var(--color-ink-950);
+  background: var(--color-ink-100);
+}
 </style>
