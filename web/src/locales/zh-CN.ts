@@ -437,8 +437,15 @@ export default {
   fontsDuplicateGroups: "个重复组",
   fontsDuplicateFiles: "个重复文件",
 
-  // ─── Navigation ─────────────────────────────────────────────────────────────
-  navLogs: "处理记录",
+  // ─── Navigation（短标签，桌面顶栏单行） ────────────────────────────────────
+  navHome: "首页",
+  navSubset: "字幕",
+  navUpload: "上传",
+  navSharing: "分享",
+  navLogs: "记录",
+  navCli: "CLI",
+  navComments: "评论",
+  navAbout: "关于",
 
   // ─── Public Upload ──────────────────────────────────────────────────────────
   publicUpload: "上传字体",

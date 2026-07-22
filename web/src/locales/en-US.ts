@@ -33,7 +33,7 @@ export default {
   apiKeyPlaceholder: "Enter API Key…",
   apiKeySave: "Save",
   apiKeyClear: "Clear Key",
-  apiKeySet: "Key Set",
+  apiKeySet: "Key",
   apiKeyNotSet: "No Key",
   apiKeySaved: "API Key saved",
   deleteFontsTitle: "Delete fonts",
@@ -437,8 +437,15 @@ export default {
   fontsDuplicateGroups: "duplicate groups",
   fontsDuplicateFiles: "duplicate files",
 
-  // ─── Navigation ─────────────────────────────────────────────────────────────
+  // ─── Navigation (short labels for single-line desktop header) ───────────────
+  navHome: "Home",
+  navSubset: "Subset",
+  navUpload: "Upload",
+  navSharing: "Sharing",
   navLogs: "Logs",
+  navCli: "CLI",
+  navComments: "Comments",
+  navAbout: "About",
 
   // ─── Public Upload ──────────────────────────────────────────────────────────
   publicUpload: "Upload Fonts",

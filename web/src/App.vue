@@ -29,14 +29,14 @@ const prefetchRoute = (path: string) => {
   if (path === "/comments") warmComments();
 };
 const navItems = [
-  { path: "/",         labelKey: "home"         },
-  { path: "/subset",   labelKey: "subset"       },
-  { path: "/upload",   labelKey: "publicUpload" },
-  { path: "/sharing",  labelKey: "sharing"      },
-  { path: "/logs",     labelKey: "navLogs"      },
-  { path: "/cli",      labelKey: "cli"          },
-  { path: "/comments", labelKey: "comments"     },
-  { path: "/about",    labelKey: "about"        },
+  { path: "/",         labelKey: "navHome"     },
+  { path: "/subset",   labelKey: "navSubset"   },
+  { path: "/upload",   labelKey: "navUpload"   },
+  { path: "/sharing",  labelKey: "navSharing"  },
+  { path: "/logs",     labelKey: "navLogs"     },
+  { path: "/cli",      labelKey: "navCli"      },
+  { path: "/comments", labelKey: "navComments" },
+  { path: "/about",    labelKey: "navAbout"    },
 ];
 
 const isNavActive = (path: string) => {
@@ -166,20 +166,20 @@ watchEffect(() => {
   <div class="min-h-screen bg-page flex flex-col">
     <!-- ─── Navigation ────────────────────────────────────────────────────── -->
     <header class="sticky top-0 z-40 bg-surface/90 backdrop-blur-md border-b border-sakura-100 shadow-[var(--shadow-sm)]">
-      <nav class="max-w-6xl mx-auto px-5 h-14 flex items-center gap-4">
+      <nav class="max-w-6xl mx-auto px-4 sm:px-5 h-14 flex items-center gap-2 sm:gap-3 min-w-0">
         <!-- Wordmark -->
         <button class="flex items-center shrink-0 group" @click="router.push('/')">
-          <span class="font-display font-black text-[1.35rem] tracking-[-0.02em] leading-none text-ink-900 group-hover:text-sakura-500 transition-colors duration-200">
+          <span class="font-display font-black text-[1.25rem] sm:text-[1.35rem] tracking-[-0.02em] leading-none text-ink-900 group-hover:text-sakura-500 transition-colors duration-200">
             FontIn<span class="text-sakura-500 group-hover:text-ink-900 transition-colors duration-200">Ass</span>
           </span>
         </button>
 
         <!-- Desktop nav links (hidden on mobile) -->
-        <div class="hidden md:flex items-center gap-1">
+        <div class="hidden md:flex items-center gap-0.5 min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
           <button
             v-for="item in navItems"
             :key="item.path"
-            class="px-3 h-8 rounded-xl text-sm font-medium transition-colors duration-150"
+            class="shrink-0 whitespace-nowrap px-2 lg:px-2.5 h-8 rounded-lg text-[13px] font-medium transition-colors duration-150"
             :class="isNavActive(item.path)
               ? 'bg-sakura-400 text-white shadow-[var(--shadow-sm)]'
               : 'text-ink-600 hover:bg-sakura-50 hover:text-sakura-600'"
@@ -190,72 +190,78 @@ watchEffect(() => {
           </button>
         </div>
 
-        <!-- Spacer -->
-        <div class="flex-1" />
+        <!-- Right utilities -->
+        <div class="hidden md:flex items-center gap-1 shrink-0 ml-auto">
+          <!-- Settings popover -->
+          <div class="relative">
+            <button
+              class="flex items-center justify-center gap-1 h-8 w-8 lg:w-auto lg:px-2.5 rounded-lg text-xs font-medium text-ink-600 hover:bg-sakura-50 hover:text-sakura-600 transition-colors duration-150"
+              :class="settingsOpen && 'bg-sakura-50 text-sakura-600'"
+              :title="t('settings')"
+              :aria-label="t('settings')"
+              @click="settingsOpen = !settingsOpen; mobileMenuOpen = false"
+            >
+              <Settings2 class="w-3.5 h-3.5" />
+              <span class="hidden lg:inline">{{ t('settings') }}</span>
+              <ChevronDown class="hidden lg:block w-3 h-3 transition-transform duration-200" :class="settingsOpen ? 'rotate-180' : ''" />
+            </button>
 
-        <!-- ─── Settings popover trigger (desktop) ────────────────────────── -->
-        <div class="relative hidden md:block">
+            <transition name="dropdown">
+              <div
+                v-if="settingsOpen"
+                class="absolute right-0 top-full mt-2 w-80 card-raised p-5 z-50"
+                @click.stop
+              >
+                <div class="absolute top-0 left-0 right-0 h-0.5 rounded-t-[18px] bg-gradient-to-r from-sakura-300 to-sky-300" />
+                <SettingsPanel variant="dropdown" @close="settingsOpen = false" />
+              </div>
+            </transition>
+          </div>
+
+          <!-- API Key -->
           <button
-            class="flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-medium text-ink-600 hover:bg-sakura-50 hover:text-sakura-600 transition-colors duration-150"
-            :class="settingsOpen && 'bg-sakura-50 text-sakura-600'"
-            @click="settingsOpen = !settingsOpen; mobileMenuOpen = false"
+            class="flex items-center justify-center gap-1 h-8 w-8 lg:w-auto lg:px-2.5 rounded-lg text-xs font-medium transition-colors duration-150"
+            :class="hasKey
+              ? 'text-mint-600 bg-mint-100 hover:bg-mint-100/80'
+              : 'text-amber-400 bg-amber-100 hover:bg-amber-100/80'"
+            :title="hasKey ? t('apiKeySet') : t('apiKeyNotSet')"
+            :aria-label="hasKey ? t('apiKeySet') : t('apiKeyNotSet')"
+            @click="openKeyModal"
           >
-            <Settings2 class="w-3.5 h-3.5" />
-            {{ t('settings') }}
-            <ChevronDown class="w-3 h-3 transition-transform duration-200" :class="settingsOpen ? 'rotate-180' : ''" />
+            <KeyRound class="w-3.5 h-3.5" :stroke-width="2.5" />
+            <span class="hidden lg:inline">{{ hasKey ? t('apiKeySet') : t('apiKeyNotSet') }}</span>
           </button>
 
-          <!-- Settings dropdown (desktop) -->
-          <transition name="dropdown">
-            <div
-              v-if="settingsOpen"
-              class="absolute right-0 top-full mt-2 w-80 card-raised p-5 z-50"
-              @click.stop
-            >
-              <div class="absolute top-0 left-0 right-0 h-0.5 rounded-t-[18px] bg-gradient-to-r from-sakura-300 to-sky-300" />
-              <SettingsPanel variant="dropdown" @close="settingsOpen = false" />
-            </div>
-          </transition>
+          <!-- Dark mode -->
+          <button
+            class="flex items-center justify-center h-8 w-8 rounded-lg text-xs font-medium text-ink-600 hover:bg-sakura-50 hover:text-sakura-600 transition-colors duration-150"
+            @click="cycleTheme"
+            :title="themeMode === 'system' ? t('themeSystem') : themeMode === 'dark' ? t('themeDark') : t('themeLight')"
+            :aria-label="themeMode === 'system' ? t('themeSystem') : themeMode === 'dark' ? t('themeDark') : t('themeLight')"
+          >
+            <Moon v-if="themeMode === 'dark'" class="w-3.5 h-3.5" />
+            <Sun v-else-if="themeMode === 'light'" class="w-3.5 h-3.5" />
+            <template v-else>
+              <Moon class="w-3.5 h-3.5 dark:hidden" />
+              <Sun class="w-3.5 h-3.5 hidden dark:block" />
+            </template>
+          </button>
+
+          <!-- Language -->
+          <button
+            class="flex items-center justify-center gap-1 h-8 min-w-8 px-2 rounded-lg text-xs font-medium text-ink-600 hover:bg-sakura-50 hover:text-sakura-600 transition-colors duration-150 whitespace-nowrap"
+            @click="toggleLang"
+            :title="locale === 'zh-CN' ? 'English' : '中文'"
+            :aria-label="locale === 'zh-CN' ? 'Switch to English' : '切换到中文'"
+          >
+            <Globe class="w-3.5 h-3.5" />
+            <span>{{ locale === "zh-CN" ? "EN" : "中文" }}</span>
+          </button>
         </div>
-
-        <!-- API Key button (desktop) -->
-        <button
-          class="hidden md:flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-medium transition-colors duration-150"
-          :class="hasKey
-            ? 'text-mint-600 bg-mint-100 hover:bg-mint-100/80'
-            : 'text-amber-400 bg-amber-100 hover:bg-amber-100/80'"
-          @click="openKeyModal"
-        >
-          <KeyRound class="w-3.5 h-3.5" :stroke-width="2.5" />
-          {{ hasKey ? t('apiKeySet') : t('apiKeyNotSet') }}
-        </button>
-
-        <!-- Dark mode toggle (desktop) -->
-        <button
-          class="hidden md:flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-medium text-ink-600 hover:bg-sakura-50 hover:text-sakura-600 transition-colors duration-150"
-          @click="cycleTheme"
-          :title="themeMode === 'system' ? t('themeSystem') : themeMode === 'dark' ? t('themeDark') : t('themeLight')"
-        >
-          <Moon v-if="themeMode === 'dark'" class="w-3.5 h-3.5" />
-          <Sun v-else-if="themeMode === 'light'" class="w-3.5 h-3.5" />
-          <template v-else>
-            <Moon class="w-3.5 h-3.5 dark:hidden" />
-            <Sun class="w-3.5 h-3.5 hidden dark:block" />
-          </template>
-        </button>
-
-        <!-- Language toggle (desktop) -->
-        <button
-          class="hidden md:flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-medium text-ink-600 hover:bg-sakura-50 hover:text-sakura-600 transition-colors duration-150"
-          @click="toggleLang"
-        >
-          <Globe class="w-3.5 h-3.5" />
-          {{ locale === "zh-CN" ? "EN" : "中文" }}
-        </button>
 
         <!-- Hamburger (mobile only) -->
         <button
-          class="md:hidden flex items-center justify-center w-9 h-9 rounded-xl text-ink-600 hover:bg-sakura-50 hover:text-sakura-600 transition-colors duration-150"
+          class="md:hidden flex items-center justify-center w-9 h-9 rounded-xl text-ink-600 hover:bg-sakura-50 hover:text-sakura-600 transition-colors duration-150 ml-auto"
           @click="mobileMenuOpen = !mobileMenuOpen; settingsOpen = false"
           :aria-label="mobileMenuOpen ? 'Close menu' : 'Open menu'"
         >
